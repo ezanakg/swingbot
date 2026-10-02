@@ -69,13 +69,13 @@ risk:
   max_position_pct: 0.08
   cash_buffer_pct: 0.10
   liquidity_cap_pct_of_adv: 0.005
-  max_open_positions: 6
+  max_open_positions: 1
   max_positions_per_strategy: 4
   max_sector_exposure_pct: 0.30
   correlation_lookback: 60
   max_correlation: 0.80
   max_correlated_holdings: 2
-  max_new_entries_per_day: 2
+  max_new_entries_per_day: 1
   min_equity_to_trade: 500
   min_position_notional: 200
 
