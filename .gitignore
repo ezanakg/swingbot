@@ -1,0 +1,19 @@
+# secrets and runtime state: never commit
+.env
+var/
+*.pickle
+*.pickle.enc
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

@@ -1,0 +1,15 @@
+services:
+  swingbot:
+    build:
+      context: ..
+      dockerfile: ops/Dockerfile
+    container_name: swingbot
+    env_file: ../.env            # never bake secrets into the image
+    environment:
+      - TZ=America/New_York
+      - SWINGBOT_CONFIG_DIR=/opt/swingbot/config
+    volumes:
+      - ../var:/opt/swingbot/var   # SQLite DB, parquet cache, logs, encrypted session, kill switch
+      - ../config:/opt/swingbot/config:ro
+    restart: unless-stopped
+    # one-off runs:  docker compose run --rm swingbot swingbot --config /opt/swingbot/config status

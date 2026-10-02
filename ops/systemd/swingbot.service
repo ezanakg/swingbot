@@ -1,0 +1,21 @@
+# /etc/systemd/system/swingbot@.service  -- templated: swingbot@scan, swingbot@manage, swingbot@report
+[Unit]
+Description=swingbot %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=swingbot
+Group=swingbot
+WorkingDirectory=/opt/swingbot
+EnvironmentFile=/opt/swingbot/.env
+Environment=SWINGBOT_CONFIG_DIR=/opt/swingbot/config
+ExecStart=/opt/swingbot/.venv/bin/swingbot %i
+TimeoutStartSec=1800
+# hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/swingbot/var
+UMask=0077

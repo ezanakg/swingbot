@@ -1,0 +1,15 @@
+# Timers (install one per mode as swingbot-<mode>.timer referencing swingbot@<mode>.service), e.g.:
+#   /etc/systemd/system/swingbot-scan.timer   -> Unit=swingbot@scan.service,   OnCalendar=Mon..Fri 16:15 America/New_York
+#   /etc/systemd/system/swingbot-manage.timer -> Unit=swingbot@manage.service, OnCalendar=Mon..Fri 09:35,13:35,15:45 America/New_York
+#   /etc/systemd/system/swingbot-report.timer -> Unit=swingbot@report.service, OnCalendar=Mon..Fri 17:00 America/New_York
+[Unit]
+Description=swingbot scan timer
+
+[Timer]
+Unit=swingbot@scan.service
+OnCalendar=Mon..Fri 16:15 America/New_York
+Persistent=false
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

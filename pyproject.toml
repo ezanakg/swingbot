@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "swingbot"
+version = "0.1.0"
+description = "Production-grade swing trading bot for a Robinhood brokerage account (robin-stocks behind a broker abstraction)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Ezana Gebru" }]
+dependencies = [
+  "pandas>=2.1",
+  "numpy>=1.26",
+  "pydantic>=2.5",
+  "PyYAML>=6.0",
+  "pyarrow>=14.0",
+  "pandas_market_calendars>=4.3",
+  "robin_stocks>=3.0",
+  "yfinance>=0.2.40",
+  "pyotp>=2.9",
+  "cryptography>=41.0",
+  "requests>=2.31",
+  "python-dotenv>=1.0",
+  "filelock>=3.13",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4", "pytest-cov>=4.1", "mypy>=1.8", "ruff>=0.4", "pandas-stubs", "types-PyYAML", "types-requests"]
+
+[project.scripts]
+swingbot = "swingbot.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["swingbot*"]
+
+[tool.setuptools.package-data]
+swingbot = ["state/schema.sql", "state/migrations/*.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true

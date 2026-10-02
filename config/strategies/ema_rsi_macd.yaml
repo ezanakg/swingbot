@@ -1,0 +1,22 @@
+id: ema_rsi_macd_v1
+type: ema_rsi_macd             # registry key (module swingbot/strategy/ema_rsi_macd.py)
+timeframe: 1d
+warmup_bars: 250
+ema_fast: 9
+ema_slow: 21
+ema_trend: 50
+rsi_period: 14
+rsi_entry_min: 40
+rsi_entry_max: 65
+rsi_exit_overbought: 75
+macd: { fast: 12, slow: 26, signal: 9 }
+atr_period: 14
+adx_period: 14
+adx_min: 18
+relative_volume_min: 1.0
+breakout_lookback: 20
+min_score: 0.6
+cross_lookback: 3
+max_hold_bars: 30
+stop_atr_mult: 2.0
+target_atr_mult: 3.0

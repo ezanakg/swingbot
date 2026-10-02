@@ -1,0 +1,155 @@
+# swingbot settings. Every value here is validated by swingbot/settings.py (pydantic) at startup.
+# Environment variables override: MODE, LIVE_TRADING_ACK, LIVE_ALLOWED_SYMBOLS, KILL_SWITCH_PATH, RH_SESSION_DIR,
+# AUTH_APPROVAL_TIMEOUT_SEC, SWINGBOT_DB_PATH, SWINGBOT_DATA_DIR, SWINGBOT_LOG_DIR, LOG_LEVEL.
+
+mode: paper                    # paper | live  (live additionally requires LIVE_TRADING_ACK + LIVE_ALLOWED_SYMBOLS)
+
+account:
+  type: margin                 # cash | margin
+  fractional_shares: false
+  pdt_equity_threshold: 25000
+
+paths:                         # relative paths resolve against the directory that contains config/
+  data_dir: var/data
+  db_path: var/swingbot.sqlite3
+  log_dir: var/logs
+  lock_dir: var/locks
+  heartbeat_path: var/heartbeat.json
+  kill_switch_path: var/KILL_SWITCH
+  session_dir: var/session
+
+data:
+  providers:                   # provider per timeframe: robinhood | yfinance
+    "1d": yfinance
+    "1h": yfinance
+  fallback_provider: yfinance
+  lookback_buffer: 30          # extra bars fetched beyond strategy warmup
+  cache_ttl_daily_after_et: "16:10"
+  cache_ttl_4h_minutes: 15
+  overlap_revalidate_bars: 5
+  quality:
+    max_missing_sessions_60: 2
+    max_zero_volume_pct: 0.01
+    stale_sessions: 2
+    split_move_pct: 0.40
+    actions:                   # warn | skip_symbol | halt
+      missing_sessions: skip_symbol
+      nan_values: skip_symbol
+      ohlc_sanity: skip_symbol
+      stale_data: skip_symbol
+      split_detected: skip_symbol
+      duplicates: warn
+
+quotes:
+  max_age_sec: 60
+  max_spread_pct: 0.005
+
+screening:
+  min_avg_dollar_volume: 20000000
+  min_price: 5
+  max_price: 2000
+  max_median_spread_pct: 0.0025
+  atr_pct_min: 0.01
+  atr_pct_max: 0.08
+  earnings_sessions_before: 5
+  earnings_sessions_after: 1
+  exclude_leveraged_etfs: true
+  spread_history_days: 20
+
+regime:
+  symbol: SPY
+  vix_symbol: "^VIX"
+  use_vix: true
+  vix_halt_level: 35
+  neutral_size_multiplier: 0.5
+  neutral_min_score_bump: 0.1
+
+risk:
+  risk_per_trade_pct: 0.01
+  max_position_pct: 0.08
+  cash_buffer_pct: 0.10
+  liquidity_cap_pct_of_adv: 0.005
+  max_open_positions: 6
+  max_positions_per_strategy: 4
+  max_sector_exposure_pct: 0.30
+  correlation_lookback: 60
+  max_correlation: 0.80
+  max_correlated_holdings: 2
+  max_new_entries_per_day: 2
+  min_equity_to_trade: 500
+  min_position_notional: 200
+
+stops:
+  atr_mult_initial: 2.0
+  hard_stop_pct: 0.06
+  stop_limit_offset_pct: 0.005
+  trail_atr_mult: 2.5
+  trail_activation_r: 1.0
+  breakeven_r: 1.5
+  breakeven_slippage_pct: 0.002
+  take_profit:
+    - { r: 2.0, fraction: 0.5 }
+  max_hold_days: 30
+  dead_money_sessions: 15
+  dead_money_r_band: 0.5
+  gap_reprice_offset_pct: 0.003
+  gap_max_attempts: 2
+
+circuit_breakers:
+  daily_loss_halt_pct: 0.03
+  weekly_loss_halt_pct: 0.06
+  weekly_halt_sessions: 5
+  consecutive_loss_halt: 4
+  max_drawdown_halt_pct: 0.15
+
+execution:
+  entry_offset_pct: 0.001
+  max_chase_pct: 0.01
+  exit_offset_pct: 0.001
+  urgent_exit_offset_pct: 0.003
+  urgent_exit_max_offset_pct: 0.01
+  urgent_reprice_interval_sec: 120
+  entry_ttl_minutes: 90
+  queue_window_hours: 20
+  trade_on_half_days: false
+  extended_hours: false
+  max_quote_vs_signal_close_pct: 0.03
+  fill_poll_interval_sec: 60
+  manage_poll_duration_sec: 0      # 0 = single pass per manage run (cron drives cadence); >0 = keep polling fills
+  cancel_confirm_timeout_sec: 30
+  stop_placement_retries: 3
+  submitting_adoption_window_min: 10
+
+broker:
+  rate_limit_rps: 1.5
+  rate_limit_burst: 10
+  cost_weights: { historicals: 2, quotes: 1, orders: 1, account: 1 }
+  retry: { base_sec: 1.0, factor: 2.0, max_attempts: 5, cap_sec: 60.0 }
+  breaker: { failures: 10, window_sec: 300, open_sec: 600 }
+  auth_approval_timeout_sec: 120
+  request_timeout_sec: 20
+
+paper:
+  starting_cash: 10000
+  slippage_bps: 5
+  partial_fill_prob: 0.10
+  seed: 42
+
+alerts:
+  min_severity: WARNING        # INFO | WARNING | ERROR | CRITICAL  (channels receive >= this)
+  dedupe_window_sec: 900
+  telegram: { enabled: false }
+  discord: { enabled: false }
+  smtp: { enabled: false, host: "", port: 587, from_addr: "", to_addrs: [], use_tls: true }
+
+logging:
+  level: INFO
+  json: true
+  max_bytes: 10485760
+  backup_count: 10
+
+heartbeat:
+  max_age_hours: 30
+
+strategies:                    # file stems under config/strategies/
+  - ema_rsi_macd

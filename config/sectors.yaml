@@ -1,0 +1,87 @@
+# GICS-style sector tags used by risk/limits.py for the sector exposure cap. Fallback: yfinance `sector`.
+sectors:
+  AAPL: Information Technology
+  MSFT: Information Technology
+  NVDA: Information Technology
+  AVGO: Information Technology
+  AMD: Information Technology
+  CRM: Information Technology
+  ORCL: Information Technology
+  ADBE: Information Technology
+  QCOM: Information Technology
+  TXN: Information Technology
+  INTU: Information Technology
+  NOW: Information Technology
+  AMAT: Information Technology
+  LRCX: Information Technology
+  MU: Information Technology
+  AMZN: Consumer Discretionary
+  TSLA: Consumer Discretionary
+  HD: Consumer Discretionary
+  LOW: Consumer Discretionary
+  MCD: Consumer Discretionary
+  SBUX: Consumer Discretionary
+  NKE: Consumer Discretionary
+  GOOGL: Communication Services
+  META: Communication Services
+  NFLX: Communication Services
+  DIS: Communication Services
+  CMCSA: Communication Services
+  T: Communication Services
+  VZ: Communication Services
+  JPM: Financials
+  BAC: Financials
+  WFC: Financials
+  GS: Financials
+  MS: Financials
+  V: Financials
+  MA: Financials
+  AXP: Financials
+  BRK-B: Financials
+  BLK: Financials
+  UNH: Health Care
+  JNJ: Health Care
+  LLY: Health Care
+  ABBV: Health Care
+  MRK: Health Care
+  PFE: Health Care
+  TMO: Health Care
+  ABT: Health Care
+  ISRG: Health Care
+  AMGN: Health Care
+  XOM: Energy
+  CVX: Energy
+  COP: Energy
+  SLB: Energy
+  EOG: Energy
+  COST: Consumer Staples
+  WMT: Consumer Staples
+  PG: Consumer Staples
+  KO: Consumer Staples
+  PEP: Consumer Staples
+  CAT: Industrials
+  DE: Industrials
+  HON: Industrials
+  UNP: Industrials
+  GE: Industrials
+  BA: Industrials
+  LMT: Industrials
+  RTX: Industrials
+  LIN: Materials
+  NEE: Utilities
+  PLD: Real Estate
+  AMT: Real Estate
+  SPY: Broad Market ETF
+  QQQ: Broad Market ETF
+  IWM: Broad Market ETF
+  XLF: Financials
+  XLK: Information Technology
+  XLE: Energy
+  XLV: Health Care
+  XLI: Industrials
+  XLY: Consumer Discretionary
+  XLP: Consumer Staples
+  XLU: Utilities
+  XLB: Materials
+  XLRE: Real Estate
+  XLC: Communication Services

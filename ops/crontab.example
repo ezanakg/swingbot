@@ -1,0 +1,14 @@
+# swingbot crontab (times in America/New_York; set CRON_TZ or run the host in ET).
+# Adjust /opt/swingbot to your install path. Each mode takes an instance lock so overlaps are safe.
+CRON_TZ=America/New_York
+SHELL=/bin/bash
+SWINGBOT=/opt/swingbot/.venv/bin/swingbot
+CFG=/opt/swingbot/config
+
+# manage: 09:35 and 13:35 (4h cadence during the session) plus a 15:45 pre-close pass, Mon-Fri
+35 9,13 * * 1-5   cd /opt/swingbot && $SWINGBOT --config $CFG manage  >> var/logs/cron.log 2>&1
+45 15   * * 1-5   cd /opt/swingbot && $SWINGBOT --config $CFG manage  >> var/logs/cron.log 2>&1
+# scan: 16:15 after the close
+15 16   * * 1-5   cd /opt/swingbot && $SWINGBOT --config $CFG scan    >> var/logs/cron.log 2>&1
+# report: 17:00 daily (weekly section is added automatically on Fridays)
+0  17   * * 1-5   cd /opt/swingbot && $SWINGBOT --config $CFG report  >> var/logs/cron.log 2>&1
