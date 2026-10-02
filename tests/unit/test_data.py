@@ -164,3 +164,27 @@ def test_service_fallback_and_split_refetch(tmp_path, cal, daily_bars):
     assert r.usable and r.provider == "yfinance" and 250 <= len(r.df) <= len(daily_bars)
     svc.load_bars("SYN", Timeframe.D1, 250)
     assert Good.calls == 1
+
+
+def test_cache_backfills_when_deeper_history_requested(tmp_path, cal, daily_bars):
+    """Regression: a shallow first fetch (preflight asks for 40 bars) must not pin the cache to that depth."""
+    c = ParquetBarCache(tmp_path)
+    calls = []
+
+    def fetch(start, end):
+        calls.append(start)
+        return daily_bars[(daily_bars.index >= pd.Timestamp(start)) & (daily_bars.index <= pd.Timestamp(end))]
+
+    now = datetime(2026, 10, 1, 21, 0, tzinfo=timezone.utc)
+    shallow = c.update("SYN", Timeframe.D1, fetch, now, cal, full_start=daily_bars.index[-80].to_pydatetime())
+    assert len(shallow) == 80
+    deep = c.update("SYN", Timeframe.D1, fetch, now, cal, full_start=daily_bars.index[-300].to_pydatetime())
+    assert len(deep) == 300 and len(calls) == 2
+    # asking for the same depth again is served from the (fresh) cache
+    c.update("SYN", Timeframe.D1, fetch, now, cal, full_start=daily_bars.index[-300].to_pydatetime())
+    assert len(calls) == 2
+    # a history that genuinely starts later than requested is not refetched every time
+    c.update("SYN", Timeframe.D1, fetch, now, cal, full_start=daily_bars.index[0].to_pydatetime() - timedelta(days=400))
+    n = len(calls)
+    c.update("SYN", Timeframe.D1, fetch, now, cal, full_start=daily_bars.index[0].to_pydatetime() - timedelta(days=400))
+    assert len(calls) == n

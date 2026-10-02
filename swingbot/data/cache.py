@@ -132,9 +132,24 @@ class ParquetBarCache:
     ) -> pd.DataFrame:
         """Return up-to-date bars, fetching only what is missing plus an overlap window for re-validation."""
         cached = self.read(symbol, timeframe)
-        if cached is not None and not cached.empty and not force and self.is_fresh(symbol, timeframe, now, cal):
+        # Backfill: if a caller now needs older history than the cache was ever asked for (e.g. a shallow
+        # preflight fetch populated it first), refetch the full range. The requested start is remembered in the
+        # metadata so a genuinely short history (recent IPO) is not refetched on every call.
+        prev_req = self.meta(symbol, timeframe).get("full_start_requested")
+        needs_backfill = (
+            cached is not None and not cached.empty
+            and full_start < cached.index[0].to_pydatetime() - timedelta(days=7)
+            and (prev_req is None or full_start < datetime.fromisoformat(prev_req) - timedelta(days=7))
+        )
+        meta = {**(meta or {}), "full_start_requested": min(
+            [full_start] + ([datetime.fromisoformat(prev_req)] if prev_req else [])).isoformat()}
+        if needs_backfill:
+            log.info("%s/%s: cache starts %s but %s requested; backfilling", symbol, timeframe.value,
+                     cached.index[0].date(), full_start.date())
+        if (cached is not None and not cached.empty and not force and not needs_backfill
+                and self.is_fresh(symbol, timeframe, now, cal)):
             return cached
-        if cached is None or cached.empty or force:
+        if cached is None or cached.empty or force or needs_backfill:
             fresh = normalize_bars(fetch(full_start, now), symbol)
             if fresh.empty and cached is not None:
                 log.warning("%s/%s: fetch returned no bars; keeping stale cache", symbol, timeframe.value)
