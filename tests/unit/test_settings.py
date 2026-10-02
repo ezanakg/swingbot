@@ -24,11 +24,21 @@ def test_live_requires_ack_and_allowlist(config_dir):
     with pytest.raises(ConfigError, match="not in universe"):
         load_settings(config_dir, env={"MODE": "live", "LIVE_TRADING_ACK": "I_UNDERSTAND_THE_RISKS",
                                        "LIVE_ALLOWED_SYMBOLS": "AAPL,ZZZZ", **creds})
+    gates = {"MODE": "live", "LIVE_TRADING_ACK": "I_UNDERSTAND_THE_RISKS", "LIVE_ALLOWED_SYMBOLS": "AAPL"}
+    # default adapter is the official MCP server: it needs the credential-file key, not a password/TOTP
+    with pytest.raises(ConfigError, match="SESSION_ENC_KEY"):
+        load_settings(config_dir, env=gates)
+    s = load_settings(config_dir, env={**gates, "SESSION_ENC_KEY": "k" * 44, "RH_AGENTIC_ACCOUNT": "1234"})
+    assert s.broker.adapter == "robinhood_mcp" and s.secrets.rh_agentic_account == "1234"
+    # the robin-stocks adapter keeps the username/password/TOTP requirement
     with pytest.raises(ConfigError, match="RH_USERNAME"):
-        load_settings(config_dir, env={"MODE": "live", "LIVE_TRADING_ACK": "I_UNDERSTAND_THE_RISKS", "LIVE_ALLOWED_SYMBOLS": "AAPL"})
+        load_settings(config_dir, env={**gates, "RH_ADAPTER": "robin_stocks"})
+    with pytest.raises(ConfigError, match="broker.adapter"):
+        load_settings(config_dir, env={**gates, "RH_ADAPTER": "etrade"})
     s = load_settings(config_dir, env={"MODE": "live", "LIVE_TRADING_ACK": "I_UNDERSTAND_THE_RISKS",
-                                       "LIVE_ALLOWED_SYMBOLS": "aapl, msft", **creds})
+                                       "LIVE_ALLOWED_SYMBOLS": "aapl, msft", "RH_ADAPTER": "robin_stocks", **creds})
     assert s.is_live and s.live_allowed_symbols == ["AAPL", "MSFT"] and s.tradable_universe() == ["AAPL", "MSFT"]
+    assert s.broker.adapter == "robin_stocks"
     assert "s3cretpw!" not in str(s.secrets) and "s3cretpw!" not in repr(s)
 
 
