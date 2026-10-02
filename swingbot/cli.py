@@ -316,7 +316,9 @@ def _handlers(app: App, args: argparse.Namespace) -> tuple[RunKind, Callable[[st
             except TypeError:
                 login()
             return f"authenticated={app.broker.is_authenticated()}"
-        return RunKind.RECONCILE, auth
+        # its own run kind: _run_mode must NOT do the usual non-interactive login first (it fails before a
+        # credential exists, which is exactly the situation `auth` is for)
+        return RunKind.AUTH, auth
     raise SystemExit(EXIT_USAGE)
 
 

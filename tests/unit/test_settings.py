@@ -55,3 +55,33 @@ def test_env_overrides_and_validation(config_dir, tmp_path):
 def test_repo_config_loads():
     s = load_settings(CONFIG_DIR, env={})
     assert len(s.universe.watchlist) >= 40 and "TQQQ" in s.universe.leveraged_etfs
+
+
+def test_auth_command_does_not_pre_login(config_dir, monkeypatch):
+    """Regression: `swingbot auth` used to run as a RECONCILE kind, so the CLI attempted a non-interactive login
+    first and failed with "no stored credential" before the browser flow could start."""
+    from swingbot import cli
+    from swingbot.enums import RunKind
+
+    calls = []
+
+    class FakeBroker:
+        name = "fake"
+
+        def login(self, interactive=False):
+            calls.append(interactive)
+            if not interactive:
+                raise AssertionError("non-interactive login attempted before auth")
+
+        def is_authenticated(self):
+            return True
+
+    class FakeApp:
+        broker = FakeBroker()
+        engine = None
+
+    args = cli._parser().parse_args(["auth"])
+    kind, fn = cli._handlers(FakeApp(), args)
+    assert kind == RunKind.AUTH
+    assert kind not in (RunKind.SCAN, RunKind.MANAGE, RunKind.RECONCILE, RunKind.LIQUIDATE)
+    assert fn("run") == "authenticated=True" and calls == [True]
