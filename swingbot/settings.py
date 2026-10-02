@@ -231,7 +231,13 @@ class AdapterBreakerConfig(BaseModel):
     open_sec: int = 600
 
 
+BROKER_ADAPTERS = ("robinhood_mcp", "robin_stocks")
+
+
 class BrokerConfig(BaseModel):
+    # Live adapter: ``robinhood_mcp`` = Robinhood's official agentic-trading MCP server (orders reach the dedicated
+    # Agentic account only); ``robin_stocks`` = the unofficial web API via robin-stocks (username/password/TOTP).
+    adapter: str = "robinhood_mcp"
     rate_limit_rps: float = 1.5
     rate_limit_burst: int = 10
     cost_weights: dict[str, int] = Field(
@@ -241,6 +247,14 @@ class BrokerConfig(BaseModel):
     breaker: AdapterBreakerConfig = Field(default_factory=AdapterBreakerConfig)
     auth_approval_timeout_sec: int = 120
     request_timeout_sec: int = 20
+
+    @field_validator("adapter")
+    @classmethod
+    def _adapter_known(cls, v: str) -> str:
+        v = (v or "").strip().lower()
+        if v not in BROKER_ADAPTERS:
+            raise ValueError(f"broker.adapter must be one of {BROKER_ADAPTERS}, got {v!r}")
+        return v
 
 
 class PaperConfig(BaseModel):
@@ -322,6 +336,7 @@ class Secrets(BaseModel):
     rh_username: str | None = None
     rh_password: str | None = None
     rh_totp_secret: str | None = None
+    rh_agentic_account: str | None = None  # optional: last digits of the Agentic account to trade (MCP adapter)
     session_enc_key: str | None = None
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
@@ -392,8 +407,13 @@ class Settings(BaseModel):
             missing = [s for s in self.live_allowed_symbols if s not in set(self.universe.watchlist)]
             if missing:
                 raise ValueError(f"LIVE_ALLOWED_SYMBOLS not in universe watchlist: {missing}; refusing to start")
-            if not (self.secrets.rh_username and self.secrets.rh_password and self.secrets.rh_totp_secret):
-                raise ValueError("MODE=live requires RH_USERNAME, RH_PASSWORD and RH_TOTP_SECRET; refusing to start")
+            if self.broker.adapter == "robin_stocks":
+                if not (self.secrets.rh_username and self.secrets.rh_password and self.secrets.rh_totp_secret):
+                    raise ValueError("MODE=live with broker.adapter=robin_stocks requires RH_USERNAME, RH_PASSWORD "
+                                     "and RH_TOTP_SECRET; refusing to start")
+            elif not self.secrets.session_enc_key:
+                raise ValueError("MODE=live with broker.adapter=robinhood_mcp requires SESSION_ENC_KEY (it encrypts "
+                                 "the OAuth credential minted by `swingbot auth`); refusing to start")
         if self.strategies and any(s not in self.strategy_params for s in self.strategies):
             missing = [s for s in self.strategies if s not in self.strategy_params]
             raise ValueError(f"strategy config file(s) missing under config/strategies/: {missing}")
@@ -472,6 +492,7 @@ def load_settings(
             rh_username=_env(base_env, "RH_USERNAME"),
             rh_password=_env(base_env, "RH_PASSWORD"),
             rh_totp_secret=_env(base_env, "RH_TOTP_SECRET"),
+            rh_agentic_account=_env(base_env, "RH_AGENTIC_ACCOUNT"),
             session_enc_key=_env(base_env, "SESSION_ENC_KEY"),
             telegram_bot_token=_env(base_env, "TELEGRAM_BOT_TOKEN"),
             telegram_chat_id=_env(base_env, "TELEGRAM_CHAT_ID"),
@@ -497,6 +518,9 @@ def load_settings(
         approval = _env(base_env, "AUTH_APPROVAL_TIMEOUT_SEC")
         if approval:
             broker_raw["auth_approval_timeout_sec"] = int(approval)
+        adapter = _env(base_env, "RH_ADAPTER")
+        if adapter:
+            broker_raw["adapter"] = adapter
 
         logging_raw = dict(raw.get("logging") or {})
         lvl = _env(base_env, "LOG_LEVEL")

@@ -106,10 +106,14 @@ def build_app(
 
     yf = YFinanceProvider(cal)
     if broker is None:
-        if settings.is_live:
+        if settings.is_live and settings.broker.adapter == "robin_stocks":
             from swingbot.broker.robinhood import RobinhoodBroker  # only place outside the adapter that names it
 
             broker = RobinhoodBroker(settings, cal, alerts, clock=clock, sleep=sleep)
+        elif settings.is_live:
+            from swingbot.broker.robinhood_mcp import RobinhoodMcpBroker  # official agentic-trading surface
+
+            broker = RobinhoodMcpBroker(settings, cal, alerts, clock=clock, sleep=sleep)
         else:
             p = settings.paper
             broker = PaperBroker(p.starting_cash, FillModel(p.slippage_bps, p.partial_fill_prob, seed=p.seed), cal,

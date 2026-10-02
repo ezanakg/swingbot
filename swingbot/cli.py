@@ -17,8 +17,9 @@ from swingbot.backtest.engine import BacktestConfig, Backtester
 from swingbot.backtest.metrics import format_metrics
 from swingbot.backtest.walkforward import WalkForwardConfig, format_walkforward, walk_forward
 from swingbot.broker.retry import AuthError, BrokerError, MfaRequired
-from swingbot.enums import AlertSeverity, RunKind, Timeframe
+from swingbot.enums import AlertSeverity, OrderType, RunKind, Side, Timeframe
 from swingbot.execution.engine import CycleHalted
+from swingbot.models import OrderRequest
 from swingbot.monitoring.heartbeat import heartbeat_missed, write_heartbeat
 from swingbot.monitoring.logging_setup import setup_logging
 from swingbot.risk.limits import LimitsParams
@@ -62,6 +63,10 @@ def _parser() -> argparse.ArgumentParser:
     h.add_argument("--reason", required=True)
     sub.add_parser("auth", help="live only: interactive login to register this device with Robinhood")
     sub.add_parser("status", help="print positions, open orders, breaker state and last runs")
+    pf = sub.add_parser("preflight", help="read-only first-contact check: login, account, positions, orders, quotes, "
+                                          "bars, earnings. Places NO orders.")
+    pf.add_argument("--review", default=None, metavar="SYMBOL",
+                    help="also ask the broker to simulate a 1-share limit buy of SYMBOL (a dry run; places nothing)")
     return p
 
 
@@ -141,6 +146,90 @@ def _status(app: App) -> str:
     return "\n".join(lines)
 
 
+def _preflight(app: App, args: argparse.Namespace) -> str:
+    """Exercise every read path of the configured broker and print what the bot would see. Never submits."""
+    s = app.settings
+    now = app.clock()
+    broker = app.broker
+    lines = [f"swingbot {__version__} preflight: mode={s.mode.value} broker={broker.name} adapter={s.broker.adapter}"]
+    if s.is_live:
+        lines.append(f"live gates: ack=ok allowlist={s.live_allowed_symbols} max_open_positions={s.risk.max_open_positions}")
+    ks = s.paths.kill_switch_path
+    lines.append(f"kill switch: {'PRESENT (no orders would be placed)' if ks.exists() else f'absent ({ks})'}")
+
+    broker.login()
+    lines.append(f"login: ok (authenticated={broker.is_authenticated()})")
+    summary = getattr(broker, "account_summary", None)
+    if callable(summary):
+        lines.append(f"account: {summary()}")
+    required = getattr(broker, "required_tools", None)
+    live_tools = getattr(broker, "tool_names", None)
+    if callable(required) and callable(live_tools):
+        missing = sorted(set(required()) - set(live_tools()))
+        lines.append("broker tools: all present" if not missing else f"broker tools MISSING (schema drift): {missing}")
+
+    acct = broker.get_account()
+    lines.append(f"account snapshot: type={acct.account_type.value} equity={acct.equity:,.2f} cash={acct.cash:,.2f} "
+                 f"settled={acct.settled_cash:,.2f} buying_power={acct.buying_power:,.2f} "
+                 f"day_trades_used={acct.day_trades_used} unrealized={acct.unrealized_pl:,.2f}")
+    positions = broker.get_positions()
+    lines.append(f"broker positions ({len(positions)}):")
+    lines.extend(f"  {p.symbol} qty={p.qty:g} avg={p.avg_cost:.2f}" for p in positions)
+    orders = broker.get_open_orders()
+    lines.append(f"broker open orders ({len(orders)}):")
+    lines.extend(f"  {o.broker_id} {o.symbol} {o.side.value} {o.qty:g} {o.order_type.value} limit={o.limit_price} "
+                 f"stop={o.stop_price} {o.status.value}" for o in orders)
+
+    symbols = s.tradable_universe()[:10]
+    lines.append(f"quotes ({len(symbols)} of {len(s.tradable_universe())} tradable symbols):")
+    for sym in symbols:
+        try:
+            q = broker.get_quote(sym)
+        except BrokerError as exc:
+            lines.append(f"  {sym}: ERROR {exc}")
+            continue
+        age = q.age_seconds(now)
+        spread = q.spread_pct
+        usable = age <= s.quotes.max_age_sec and q.last > 0 and (spread == float("inf") or spread <= s.quotes.max_spread_pct)
+        lines.append(f"  {sym}: bid={q.bid:.2f} ask={q.ask:.2f} last={q.last:.2f} age={age:.0f}s "
+                     f"spread={'n/a' if spread == float('inf') else f'{spread:.3%}'} source={q.source} "
+                     f"{'usable' if usable else 'NOT usable now (deferred until the open)'}")
+
+    if symbols:
+        sym = symbols[0]
+        res = app.data.load_bars(sym, Timeframe.D1, 40, now=now)
+        df = res.df
+        last = df.index[-1].date().isoformat() if len(df) else "n/a"
+        lines.append(f"bars: {sym} daily rows={len(df)} last_closed={last} provider={df.attrs.get('provider', '?')}")
+        try:
+            dates = broker.get_earnings(sym)
+            upcoming = [d.isoformat() for d in dates if d >= now.date()][:2]
+            lines.append(f"earnings: {sym} known={len(dates)} next={upcoming or 'none scheduled'}")
+        except BrokerError as exc:
+            lines.append(f"earnings: {sym} ERROR {exc}")
+
+    if args.review:
+        review = getattr(broker, "review_order", None)
+        sym = args.review.upper()
+        if not callable(review):
+            lines.append(f"review: broker {broker.name} has no pre-trade simulation; skipped")
+        else:
+            q = broker.get_quote(sym)
+            price = q.bid if q.bid > 0 else q.last
+            req = OrderRequest(client_ref=f"preflight-review-{sym}", symbol=sym, side=Side.BUY, qty=1,
+                               order_type=OrderType.LIMIT, limit_price=round(price, 2), reason="preflight dry run")
+            r = review(req)
+            lines.append(f"review (dry run, nothing placed): buy 1 {sym} limit {req.limit_price:.2f} -> "
+                         f"order_checks={r.get('order_checks')} quote={ {k: r.get('quote_data', {}).get(k) for k in ('bid_price', 'ask_price', 'last_trade_price')} if isinstance(r.get('quote_data'), dict) else None}")
+
+    snap = app.repo.latest_snapshot()
+    lines.append(f"local db: last snapshot {snap.ts.isoformat() if snap else 'none'}; "
+                 f"local open orders={len(app.repo.open_orders())}")
+    lines.append(app.reporter.positions_table(None, now))
+    lines.append("preflight complete: no orders were placed")
+    return "\n".join(lines)
+
+
 def _run_mode(app: App, kind: RunKind, fn: Callable[[str], str]) -> int:
     run_id = app.repo.start_run(kind, now=app.clock())
     status, detail, code = "OK", "", EXIT_OK
@@ -217,6 +306,8 @@ def _handlers(app: App, args: argparse.Namespace) -> tuple[RunKind, Callable[[st
         return RunKind.UNHALT, lambda rid: f"breaker engaged: {app.engine.d.breaker.halt_manually(args.reason, app.clock()).detail}"
     if args.command == "status":
         return RunKind.REPORT, lambda rid: _status(app)
+    if args.command == "preflight":
+        return RunKind.REPORT, lambda rid: _preflight(app, args)
     if args.command == "auth":
         def auth(rid: str) -> str:
             login = getattr(app.broker, "login")

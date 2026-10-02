@@ -2,14 +2,15 @@
 
 A production-grade **swing trading bot** for a single Robinhood brokerage account. Python 3.11+, long-only US
 equities/ETFs, holding period 2 days to 6 weeks, one decision cycle per day after the close plus intraday
-management passes. Built on `robin-stocks` behind a broker-abstraction layer, with a paper broker, an event-driven
-backtester and a full audit trail in SQLite.
+management passes. Two live adapters sit behind one broker abstraction: Robinhood's **official agentic-trading
+MCP server** (default; orders reach only your dedicated Agentic account) and the unofficial `robin-stocks` web
+API (fallback). Plus a paper broker, an event-driven backtester and a full audit trail in SQLite.
 
-> **Read this first.** `robin-stocks` is an *unofficial*, reverse-engineered client for Robinhood's private API.
-> Robinhood does not publish or support it, its behaviour can change without notice, and automated trading may
-> conflict with Robinhood's terms of service. Running this software against a live account is entirely at your
-> own risk: you accept the possibility of unexpected fills, rejected orders, locked accounts and financial loss.
-> Nothing here is investment advice.
+> **Read this first.** Live trading is entirely at your own risk: you accept the possibility of unexpected
+> fills, rejected orders, restricted accounts and financial loss, and Robinhood's terms put the outcome of agent
+> trades on the account holder. The `robin_stocks` adapter additionally relies on an *unofficial*,
+> reverse-engineered client for Robinhood's private API that can change without notice and may conflict with
+> Robinhood's terms of service. Nothing here is investment advice. The go-live runbook is `docs/GO_LIVE.md`.
 
 ---
 
@@ -17,7 +18,8 @@ backtester and a full audit trail in SQLite.
 
 | Guard | Behaviour |
 | --- | --- |
-| Paper by default | `MODE=paper` unless overridden. `MODE=live` refuses to start without `LIVE_TRADING_ACK=I_UNDERSTAND_THE_RISKS` **and** a non-empty `LIVE_ALLOWED_SYMBOLS` list that is a subset of the watchlist, **and** `RH_USERNAME`/`RH_PASSWORD`/`RH_TOTP_SECRET`. |
+| Paper by default | `MODE=paper` unless overridden. `MODE=live` refuses to start without `LIVE_TRADING_ACK=I_UNDERSTAND_THE_RISKS` **and** a non-empty `LIVE_ALLOWED_SYMBOLS` list that is a subset of the watchlist, **and** the adapter's credentials (`SESSION_ENC_KEY` plus a stored `swingbot auth` credential for `robinhood_mcp`; `RH_USERNAME`/`RH_PASSWORD`/`RH_TOTP_SECRET` for `robin_stocks`). |
+| Agentic account only | With the default adapter, Robinhood itself restricts the agent's orders to the dedicated Agentic brokerage account you opened and funded for it; every other account is read-only to the bot. `swingbot preflight` prints which account (masked) will be traded. |
 | No look-ahead | Signals use fully closed bars only. The partial bar is dropped before indicators run and `generate_signals` asserts the last bar is closed (`data/provider.py::assert_last_bar_closed`). |
 | Broker is truth | Every mode starts with `reconcile`: positions, open orders and balances are pulled from the broker, the local DB is repaired, and every mismatch is alerted. |
 | Idempotent | Every order carries a deterministic client reference (`sha256(symbol|signal_date|side|strategy_id|purpose|seq)`) written to the DB **before** submission. Re-running a cycle never duplicates an order. On Robinhood the same value seeds the server-side `ref_id` (uuid5). |
@@ -42,7 +44,8 @@ swingbot backtest --start 2023-01-03 --symbols AAPL,MSFT,NVDA,SPY     # yfinance
 swingbot scan                   # paper: screens the watchlist, generates signals, queues entries
 swingbot manage                 # paper: fills resting orders against quotes, manages stops
 swingbot report                 # daily summary (weekly section on Fridays or --weekly)
-pytest                          # 73 tests, no network
+swingbot preflight              # read-only check of the configured broker: login, account, orders, quotes, bars
+pytest                          # 90 tests, no network
 ```
 
 Paper mode uses **yfinance** for bars and (delayed) quotes and a simulated broker whose state lives in the same
@@ -50,13 +53,25 @@ SQLite DB under `mode=paper`. Paper and live rows never mix (every table is keye
 
 ### Going live (deliberately a chore)
 
-1. Enable an authenticator app on your Robinhood account and keep the **base32 TOTP seed** → `RH_TOTP_SECRET`.
-2. Generate a session key: `python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"` → `SESSION_ENC_KEY`.
-3. Set `MODE=live`, `LIVE_TRADING_ACK=I_UNDERSTAND_THE_RISKS`, `LIVE_ALLOWED_SYMBOLS=AAPL,MSFT,...` (must be in `config/universe.yaml`).
-4. Run `swingbot auth` **once, interactively**. Robinhood usually requires a device approval on your phone (handled
-   non-interactively by polling) and sometimes an SMS/email code (only possible in this interactive command).
-   The encrypted session is stored under `RH_SESSION_DIR` (mode 0700) and reused by scheduled runs.
-5. Schedule the modes (see `ops/`). Start with a tiny `LIVE_ALLOWED_SYMBOLS` list and `risk.max_open_positions: 1`.
+The full runbook, including what has and has not been verified, is **`docs/GO_LIVE.md`**. In short, with the
+default `robinhood_mcp` adapter:
+
+1. In the Robinhood app, open an **Agentic account** for the bot and fund it with a small budget.
+2. Generate a key: `python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"` → `SESSION_ENC_KEY`.
+3. Set `LIVE_TRADING_ACK=I_UNDERSTAND_THE_RISKS` and `LIVE_ALLOWED_SYMBOLS=AAPL,MSFT,...` (must be in `config/universe.yaml`).
+4. `MODE=live swingbot auth` **once, on a machine with a browser**: swingbot registers itself as an OAuth client,
+   you approve the agent connection in the browser, and the token pair is stored encrypted under `RH_SESSION_DIR`.
+   Scheduled runs refresh it themselves (refresh tokens are single-use, so one machine per credential).
+5. `MODE=live swingbot preflight --review AAPL`: logs in, lists the agentic account (masked), checks the server's
+   tool list for drift, pulls balances/positions/orders/quotes/bars/earnings and runs Robinhood's own pre-trade
+   simulation of a one-share order. Places nothing.
+6. Turn the agent's **trade approvals off** in the app (otherwise stops wait for a tap), set `MODE=live`, run
+   `reconcile`/`scan`/`manage` by hand once, then schedule the modes (see `ops/`). Start with one or two
+   symbols and `risk.max_open_positions: 1`.
+
+The `robin_stocks` adapter (`RH_ADAPTER=robin_stocks`) instead needs `RH_USERNAME`, `RH_PASSWORD` and the
+base32 TOTP seed in `RH_TOTP_SECRET`; its `swingbot auth` handles Robinhood's device-approval and SMS/email
+challenges interactively.
 
 ---
 
@@ -164,6 +179,29 @@ raises `BrokerSchemaDrift`, which halts new orders for the cycle and alerts.
 
 ## Robinhood API notes (assumptions that may drift)
 
+### Official agentic-trading MCP server (`broker.adapter: robinhood_mcp`, default)
+
+All of these live in `swingbot/broker/robinhood_mcp.py` (the only module that speaks MCP) and
+`swingbot/broker/mcp_auth.py` (the only module that knows the OAuth endpoints):
+
+* Transport: JSON-RPC 2.0 over Streamable HTTP to `https://agent.robinhood.com/mcp/trading` with a bearer token,
+  implemented on `requests` (JSON and `text/event-stream` responses, `Mcp-Session-Id`, re-initialise on 404).
+* Auth: OAuth 2.1 dynamic client registration + authorization code with PKCE, approved once in the browser by
+  `swingbot auth`; refresh tokens rotate on every refresh and the rotated pair is persisted before use.
+* Tools used: `get_accounts`, `get_portfolio`, `get_equity_positions`, `get_equity_orders`, `place_equity_order`,
+  `review_equity_order`, `cancel_equity_order`, `get_equity_quotes`, `get_equity_historicals`,
+  `get_earnings_results`. Names and fields come from the server's `tools/list` as captured on 2026-09-28;
+  `swingbot preflight` diffs that list against the live server and every parsed field is validated.
+* The agent may trade exactly one account (`agentic_allowed: true`); the adapter refuses to start if it sees
+  zero or several, unless `RH_AGENTIC_ACCOUNT` picks one. Prices and quantities are sent as strings; limit and
+  stop-limit orders are whole shares; `ref_id` is the uuid5 of our client reference (server-side idempotency).
+* There is no day-trade counter on this surface: the adapter counts same-session round trips in the account's
+  filled orders over the rolling 5-session window, and the PDT guard takes the larger of that and its own count.
+* Measured server throttle is about 4 calls/s; the bot's token bucket (1.5/s, burst 10) stays well under it and
+  honours `RATE_LIMITED` with a 5 s penalty.
+
+### Unofficial web API via robin-stocks (`broker.adapter: robin_stocks`)
+
 All of these live in `swingbot/broker/robinhood.py`, the only module that imports `robin_stocks`:
 
 * OAuth password grant with a TOTP `mfa_code`; device approval via the `pathfinder` workflow (polled for
@@ -200,7 +238,8 @@ swingbot/            package (cli, app, settings, models, enums, calendar)
   strategy/          indicators (pure pandas/numpy), regime, base, ema_rsi_macd, registry
   risk/              sizing, stops, limits, circuit_breaker, compliance (PDT/GFV)
   execution/         engine (scan/manage/liquidate), order_manager, reconciler, positions, pricing
-  broker/            interface, robinhood adapter, paper broker, auth helpers, ratelimit, retry
+  broker/            interface, robinhood_mcp adapter (official MCP) + mcp_auth (OAuth), robinhood adapter
+                     (robin-stocks) + auth helpers, paper broker, ratelimit, retry
   state/             sqlite (WAL) + schema.sql + migrations/ + typed repository
   monitoring/        logging (JSON + redaction), alerts, reports, heartbeat
   backtest/          engine, fills, metrics, walkforward

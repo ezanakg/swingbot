@@ -121,6 +121,7 @@ execution:
   submitting_adoption_window_min: 10
 
 broker:
+  adapter: robinhood_mcp       # live adapter: robinhood_mcp (official agentic-trading MCP, Agentic account only) | robin_stocks (unofficial)
   rate_limit_rps: 1.5
   rate_limit_burst: 10
   cost_weights: { historicals: 2, quotes: 1, orders: 1, account: 1 }
