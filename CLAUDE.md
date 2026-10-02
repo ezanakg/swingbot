@@ -4,14 +4,22 @@ Swing trading bot for a Robinhood account, built from `docs/ENGINEERING_PROMPT.m
 Full history of the first build session: `docs/session-1-transcript.md`. README.md describes behaviour and ops.
 `docs/GO_LIVE.md` is the runbook for taking it live on the user's own machine.
 
-## State as of 2026-10-02 (end of session 2)
-- All spec modules implemented; no stubs. 90 tests pass offline: `pytest`.
+## State as of 2026-10-02 (end of session 3)
+- All spec modules implemented; no stubs. 103 tests pass offline: `pytest`.
 - Session 2 added a second live adapter for Robinhood's official agentic-trading surface (hosted Trading MCP
   server + OAuth, orders reach the dedicated Agentic account only). It is the default (`broker.adapter:
   robinhood_mcp`); the robin-stocks adapter remains as `robin_stocks`. Also added `swingbot preflight`
   (read-only first-contact check) and the go-live runbook.
-- Not yet exercised against the real Robinhood API (either adapter) or live yfinance: no cloud session may hold
-  credentials. Tool/field names for the MCP adapter come from a captured `tools/list` dated 2026-09-28.
+- A separate LOCAL operator session runs the bot against the real Agentic account (••••2155, limited_margin,
+  ~$64 equity) and commits small fixes; cloud sessions review them and build the larger changes. Preflight and
+  auth have run for real; no live order has been placed yet as of this session.
+- Session 3: reviewed the operator's fixes (auth run kind, cache backfill), hardened the cache (backfill merges
+  instead of replacing; malformed metadata tolerated), added honest run kinds for every command and the explicit
+  `BROKER_LOGIN_KINDS` set, end-to-end CLI tests through `cli.main` in paper and live (fake MCP) modes, the
+  `small_account` risk profile (`config/profiles/`, `risk_profile:` / `SWINGBOT_RISK_PROFILE`) and
+  `swingbot suggest-allowlist`.
+- Tool/field names for the MCP adapter come from a captured `tools/list` dated 2026-09-28 and have now been
+  confirmed by the operator's preflight (`broker tools: all present`).
 - Default is paper mode. Never set MODE=live, never add credentials, never place real orders from a cloud session.
 
 ## Setup
@@ -38,8 +46,15 @@ pytest
 - The MCP surface has no PDT counter; the adapter approximates day trades from filled orders and the PDT guard
   takes the larger of that and its own fill-based count.
 
+## Conventions added in session 3
+- Every CLI command has its own `RunKind` (the `runs` table and heartbeat record what actually ran). Commands that
+  need a broker session before their handler are listed in `cli.BROKER_LOGIN_KINDS`; `auth` must never be in it.
+- Risk profiles are overlays in `config/profiles/<name>.yaml` applied by `load_settings`; keep `settings.yaml` as
+  the standard account and put size-specific tuning in a profile.
+- New CLI behaviour gets a test through `cli.main` (see `tests/unit/test_cli_e2e.py`), not only a handler test.
+
 ## Ideas for next sessions
-- After the user runs `swingbot auth` and `swingbot preflight` locally, fix any tool/field drift they report.
+- Watch the operator's first live fills: confirm the stop quantity and the `ref_id` idempotency on the real server.
 - Run `swingbot backtest` on real yfinance history and tune parameters with `--walk-forward`.
 - Add a mypy/ruff pass and CI (GitHub Actions running pytest).
 - Paper-trade for several weeks via the cron schedule in `ops/` before any live use.

@@ -31,6 +31,11 @@ log = logging.getLogger("swingbot.cli")
 
 EXIT_OK, EXIT_ERROR, EXIT_CONFIG, EXIT_AUTH, EXIT_HALTED, EXIT_LOCKED, EXIT_USAGE = 0, 1, 2, 3, 4, 5, 6
 
+# Run kinds that need a (non-interactive) broker session BEFORE their handler runs. Everything else either never
+# touches the broker (status, halt/unhalt, report, backtest), logs in itself (preflight, suggest-allowlist), or
+# must NOT be pre-logged-in because it exists to create the credential (auth).
+BROKER_LOGIN_KINDS = frozenset({RunKind.SCAN, RunKind.MANAGE, RunKind.RECONCILE, RunKind.LIQUIDATE})
+
 
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="swingbot", description=f"swingbot {__version__}: swing trading bot for Robinhood")
@@ -67,6 +72,10 @@ def _parser() -> argparse.ArgumentParser:
                                           "bars, earnings. Places NO orders.")
     pf.add_argument("--review", default=None, metavar="SYMBOL",
                     help="also ask the broker to simulate a 1-share limit buy of SYMBOL (a dry run; places nothing)")
+    al = sub.add_parser("suggest-allowlist", help="list watchlist symbols affordable at the current equity under the "
+                                                  "active risk profile and print a LIVE_ALLOWED_SYMBOLS line")
+    al.add_argument("--equity", type=float, default=None, help="equity to size against (default: broker account)")
+    al.add_argument("--min-shares", type=int, default=1, help="only suggest symbols affordable at >= this many shares")
     return p
 
 
@@ -151,7 +160,8 @@ def _preflight(app: App, args: argparse.Namespace) -> str:
     s = app.settings
     now = app.clock()
     broker = app.broker
-    lines = [f"swingbot {__version__} preflight: mode={s.mode.value} broker={broker.name} adapter={s.broker.adapter}"]
+    lines = [f"swingbot {__version__} preflight: mode={s.mode.value} broker={broker.name} adapter={s.broker.adapter} "
+             f"risk_profile={s.risk_profile}"]
     if s.is_live:
         lines.append(f"live gates: ack=ok allowlist={s.live_allowed_symbols} max_open_positions={s.risk.max_open_positions}")
     ks = s.paths.kill_switch_path
@@ -230,11 +240,64 @@ def _preflight(app: App, args: argparse.Namespace) -> str:
     return "\n".join(lines)
 
 
+def _suggest_allowlist(app: App, args: argparse.Namespace) -> str:
+    """Which watchlist names can the account actually buy, in whole shares, under the active sizing caps?
+
+    Uses the last closed daily bar per symbol (no live quotes needed, works in paper mode too). The affordable
+    quantity is the notional cap ``equity * max_position_pct`` and the buying-power cap ``equity * (1 -
+    cash_buffer_pct)``, whichever is smaller, floored to whole shares; the risk cap depends on the stop and is
+    checked at scan time. Places nothing.
+    """
+    s = app.settings
+    now = app.clock()
+    equity = args.equity
+    source = "--equity"
+    if equity is None:
+        snap = app.repo.latest_snapshot()
+        if snap is not None and snap.ts > now - timedelta(days=2):
+            equity, source = snap.equity, f"snapshot {snap.ts.isoformat()}"
+        else:
+            app.broker.login()
+            equity, source = app.broker.get_account().equity, f"broker {app.broker.name}"
+    budget = min(equity * s.risk.max_position_pct, equity * (1.0 - s.risk.cash_buffer_pct))
+    rows: list[tuple[str, float, int]] = []
+    skipped: list[str] = []
+    excluded = set(s.universe.leveraged_etfs) - set(s.universe.leveraged_etf_whitelist) if s.screening.exclude_leveraged_etfs else set()
+    for sym in s.universe.watchlist:
+        if sym in excluded:
+            continue
+        res = app.data.load_bars(sym, Timeframe.D1, 5, now=now)
+        if res.df.empty:
+            skipped.append(sym)
+            continue
+        close = float(res.df["close"].iloc[-1])
+        rows.append((sym, close, int(budget // close) if close > 0 else 0))
+    rows.sort(key=lambda r: (-r[2], r[1]))
+    chosen = [r for r in rows if r[2] >= max(1, args.min_shares)]
+    lines = [f"suggest-allowlist: profile={s.risk_profile} equity={equity:,.2f} ({source}) "
+             f"per-position budget={budget:,.2f} (min of {s.risk.max_position_pct:.0%} notional cap and "
+             f"{1 - s.risk.cash_buffer_pct:.0%} of equity) min_notional={s.risk.min_position_notional:,.0f}"]
+    lines.append(f"{'symbol':8s} {'last close':>10s} {'shares':>6s}  note")
+    for sym, close, qty in rows:
+        note = ("take-profit ladder possible" if qty >= 2 else "stop covers full position" if qty == 1
+                else "too expensive")
+        if 0 < qty * close < s.risk.min_position_notional:
+            qty, note = 0, "below min_position_notional"
+        lines.append(f"{sym:8s} {close:10.2f} {qty:6d}  {note}")
+    if skipped:
+        lines.append(f"no data: {', '.join(skipped)}")
+    if chosen:
+        lines.append(f"LIVE_ALLOWED_SYMBOLS={','.join(r[0] for r in chosen)}")
+    else:
+        lines.append("no watchlist symbol is affordable at this equity; deposit more or widen the watchlist")
+    return "\n".join(lines)
+
+
 def _run_mode(app: App, kind: RunKind, fn: Callable[[str], str]) -> int:
     run_id = app.repo.start_run(kind, now=app.clock())
     status, detail, code = "OK", "", EXIT_OK
     try:
-        if kind in (RunKind.SCAN, RunKind.MANAGE, RunKind.RECONCILE, RunKind.LIQUIDATE):
+        if kind in BROKER_LOGIN_KINDS:
             app.broker.login()
         detail = fn(run_id)
     except CycleHalted as exc:
@@ -303,11 +366,13 @@ def _handlers(app: App, args: argparse.Namespace) -> tuple[RunKind, Callable[[st
     if args.command == "unhalt":
         return RunKind.UNHALT, lambda rid: f"breaker cleared: {app.engine.d.breaker.clear_manual(args.reason, app.clock()).detail}"
     if args.command == "halt":
-        return RunKind.UNHALT, lambda rid: f"breaker engaged: {app.engine.d.breaker.halt_manually(args.reason, app.clock()).detail}"
+        return RunKind.HALT, lambda rid: f"breaker engaged: {app.engine.d.breaker.halt_manually(args.reason, app.clock()).detail}"
     if args.command == "status":
-        return RunKind.REPORT, lambda rid: _status(app)
+        return RunKind.STATUS, lambda rid: _status(app)
     if args.command == "preflight":
-        return RunKind.REPORT, lambda rid: _preflight(app, args)
+        return RunKind.PREFLIGHT, lambda rid: _preflight(app, args)
+    if args.command == "suggest-allowlist":
+        return RunKind.ALLOWLIST, lambda rid: _suggest_allowlist(app, args)
     if args.command == "auth":
         def auth(rid: str) -> str:
             login = getattr(app.broker, "login")
@@ -332,7 +397,10 @@ def main(argv: list[str] | None = None) -> int:
     lg = settings.logging
     setup_logging(settings.paths.log_dir, args.log_level or lg.level, lg.json_format, lg.max_bytes, lg.backup_count,
                   secrets=settings.secrets.values_to_redact(), mode=settings.mode.value)
-    log.info("swingbot %s starting: command=%s mode=%s", __version__, args.command, settings.mode.value)
+    log.info("swingbot %s starting: command=%s mode=%s risk_profile=%s", __version__, args.command,
+             settings.mode.value, settings.risk_profile)
+    if settings.profile_overrides:
+        log.info("risk profile %s overrides: %s", settings.risk_profile, ", ".join(settings.profile_overrides))
     lock = None
     if not args.no_lock:
         settings.paths.lock_dir.mkdir(parents=True, exist_ok=True)

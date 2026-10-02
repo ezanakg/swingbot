@@ -45,7 +45,8 @@ swingbot scan                   # paper: screens the watchlist, generates signal
 swingbot manage                 # paper: fills resting orders against quotes, manages stops
 swingbot report                 # daily summary (weekly section on Fridays or --weekly)
 swingbot preflight              # read-only check of the configured broker: login, account, orders, quotes, bars
-pytest                          # 90 tests, no network
+swingbot suggest-allowlist      # which watchlist names the account can afford in whole shares (see Risk profiles)
+pytest                          # 103 tests, no network
 ```
 
 Paper mode uses **yfinance** for bars and (delayed) quotes and a simulated broker whose state lives in the same
@@ -132,7 +133,24 @@ and sells at `bid − 0.3%`; after two failed attempts it escalates to the emerg
 
 > Robinhood holds shares against *each* open sell order, so a full-size stop and a 50% take-profit cannot rest
 > simultaneously. The stop therefore covers `qty − take-profit qty` while a take-profit rests, and is re-sized when
-> the ladder fills. This is documented behaviour, not a bug.
+> the ladder fills. This is documented behaviour, not a bug. With a 1-share position the ladder's 50% rounds to
+> zero, so no take-profit is placed and the stop covers the whole position.
+
+### Risk profiles (`config/profiles/`)
+
+`risk_profile: <name>` in `settings.yaml` (or `SWINGBOT_RISK_PROFILE=<name>` in the environment) applies
+`config/profiles/<name>.yaml` **on top of** `settings.yaml`: keys in the overlay win, nested sections merge, and
+everything else keeps its value. The active profile and the keys it changed are logged at startup and shown by
+`swingbot preflight`.
+
+| Profile | For | What it changes |
+| --- | --- | --- |
+| `standard` (default) | accounts from a few thousand dollars up | nothing; the values in `settings.yaml` apply |
+| `small_account` | an Agentic account funded with ~$50–500 where the whole balance is the budget | one position at up to 90% of equity, 6% risk per trade (= one stop-out), $50 equity floor, $10 minimum notional, NEUTRAL regime sizes at 1.0 (0.5 would round 1 share to 0), breakers widened to 8% / 12% / 25% (≈1.5 R / 2 R / 4.5 R at that risk), whole shares only |
+
+`swingbot suggest-allowlist [--equity E] [--min-shares N]` lists the watchlist names affordable in whole shares
+under the active profile's caps (from the last daily close) and prints a ready-to-paste `LIVE_ALLOWED_SYMBOLS=`
+line; names affordable at two or more shares can also carry the take-profit ladder.
 
 ### Screening (`config/universe.yaml`)
 

@@ -1,3 +1,4 @@
+import json
 from datetime import date, datetime, timedelta, timezone
 
 import numpy as np
@@ -188,3 +189,44 @@ def test_cache_backfills_when_deeper_history_requested(tmp_path, cal, daily_bars
     n = len(calls)
     c.update("SYN", Timeframe.D1, fetch, now, cal, full_start=daily_bars.index[0].to_pydatetime() - timedelta(days=400))
     assert len(calls) == n
+
+
+def test_cache_backfill_merges_and_tolerates_capped_providers(tmp_path, cal, daily_bars):
+    """Backfill must MERGE under the cached rows: a provider whose lookback is capped (intraday spans) or that
+    omits the newest bar must not erase what the incremental path already accumulated."""
+    c = ParquetBarCache(tmp_path)
+    now = datetime(2026, 10, 1, 21, 0, tzinfo=timezone.utc)
+    full = daily_bars
+    cap_start = full.index[-120]  # the provider can only serve the last 120 bars
+    calls = []
+    drop_latest = {"on": False}
+
+    def capped_fetch(start, end):
+        calls.append(start)
+        lo = max(pd.Timestamp(start), cap_start)
+        out = full[(full.index >= lo) & (full.index <= pd.Timestamp(end))]
+        return out.iloc[:-1] if drop_latest["on"] else out
+
+    seeded = c.update("SYN", Timeframe.D1, capped_fetch, now, cal, full_start=full.index[-60].to_pydatetime())
+    assert len(seeded) == 60 and seeded.index[-1] == full.index[-1]
+    drop_latest["on"] = True  # from now on the provider lags one bar behind what the cache already holds
+    deep = c.update("SYN", Timeframe.D1, capped_fetch, now, cal, full_start=full.index[-300].to_pydatetime())
+    assert len(calls) == 2
+    assert deep.index[0] == cap_start and deep.index[-1] == full.index[-1]  # older rows added, newest row kept
+    assert len(deep) == 120
+    # the cache still starts later than requested, but the request is remembered: no refetch loop
+    again = c.update("SYN", Timeframe.D1, capped_fetch, now, cal, full_start=full.index[-300].to_pydatetime())
+    assert len(calls) == 2 and len(again) == 120
+    # a malformed or naive timestamp in the metadata is ignored, never fatal
+    meta_path = c.meta_path("SYN", Timeframe.D1)
+    meta = json.loads(meta_path.read_text())
+    meta["full_start_requested"] = "not a timestamp"
+    meta_path.write_text(json.dumps(meta))
+    naive_start = full.index[-320].to_pydatetime().replace(tzinfo=None)
+    c.update("SYN", Timeframe.D1, capped_fetch, now, cal, full_start=naive_start)
+    assert len(calls) == 3 and json.loads(meta_path.read_text())["full_start_requested"].startswith(str(naive_start.date()))
+    # an empty backfill keeps the cache and leaves the request unrecorded so the next run retries
+    empty_calls = []
+    c.update("SYN", Timeframe.D1, lambda s, e: (empty_calls.append(s), full.iloc[0:0])[1], now, cal,
+             full_start=full.index[0].to_pydatetime() - timedelta(days=200))
+    assert len(empty_calls) == 1 and len(c.read("SYN", Timeframe.D1)) == 120

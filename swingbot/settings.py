@@ -19,6 +19,26 @@ LIVE_ACK_PHRASE = "I_UNDERSTAND_THE_RISKS"
 _SYMBOL_RE = re.compile(r"^[A-Z0-9.\-^]{1,10}$")
 
 
+STANDARD_PROFILE = "standard"
+
+
+def deep_merge(base: dict[str, Any], overlay: dict[str, Any], prefix: str = "") -> tuple[dict[str, Any], list[str]]:
+    """Return ``base`` with ``overlay`` applied on top (overlay wins; nested mappings merge, everything else
+    replaces) plus the dotted keys that changed."""
+    out = dict(base)
+    changed: list[str] = []
+    for k, v in overlay.items():
+        key = f"{prefix}{k}"
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k], sub = deep_merge(out[k], v, key + ".")
+            changed.extend(sub)
+        else:
+            if out.get(k) != v:
+                changed.append(key)
+            out[k] = v
+    return out, changed
+
+
 class ConfigError(ValueError):
     """Raised for any invalid or unsafe configuration. The process must not start when this is raised."""
 
@@ -381,6 +401,9 @@ class Settings(BaseModel):
     secrets: Secrets = Field(default_factory=Secrets, exclude=True, repr=False)
     live_allowed_symbols: list[str] = Field(default_factory=list)
     live_ack: bool = False
+    # Named overlay from config/profiles/<name>.yaml applied on top of settings.yaml (``standard`` = none).
+    risk_profile: str = STANDARD_PROFILE
+    profile_overrides: list[str] = Field(default_factory=list)  # dotted keys the profile changed (for logs)
 
     @property
     def is_live(self) -> bool:
@@ -472,6 +495,17 @@ def load_settings(
 
     try:
         raw = _read_yaml(cfg_dir / "settings.yaml")
+        profile = str(_env(base_env, "SWINGBOT_RISK_PROFILE") or raw.get("risk_profile") or STANDARD_PROFILE).strip().lower()
+        profile_overrides: list[str] = []
+        if profile != STANDARD_PROFILE:
+            if not re.fullmatch(r"[a-z0-9_\-]+", profile):
+                raise ConfigError(f"risk_profile {profile!r} is not a valid profile name")
+            overlay_path = cfg_dir / "profiles" / f"{profile}.yaml"
+            if not overlay_path.exists():
+                raise ConfigError(f"risk_profile {profile!r}: no overlay file at {overlay_path}")
+            overlay = _read_yaml(overlay_path)
+            overlay.pop("risk_profile", None)
+            raw, profile_overrides = deep_merge(raw, overlay)
         universe_raw = _read_yaml(cfg_dir / "universe.yaml")
         sectors_path = cfg_dir / "sectors.yaml"
         sectors_raw = _read_yaml(sectors_path).get("sectors", {}) if sectors_path.exists() else {}
@@ -552,6 +586,8 @@ def load_settings(
             secrets=secrets,
             live_allowed_symbols=_parse_symbol_list(_env(base_env, "LIVE_ALLOWED_SYMBOLS")),
             live_ack=(_env(base_env, "LIVE_TRADING_ACK") == LIVE_ACK_PHRASE),
+            risk_profile=profile,
+            profile_overrides=profile_overrides,
         )
     except ConfigError:
         raise

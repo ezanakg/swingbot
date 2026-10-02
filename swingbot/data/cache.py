@@ -17,8 +17,26 @@ from swingbot.enums import Timeframe
 log = logging.getLogger(__name__)
 UTC = timezone.utc
 _SAFE = re.compile(r"[^A-Za-z0-9_.\-]")
+# A request for history deeper than the cache holds triggers a backfill only beyond this tolerance, so a start that
+# lands on a weekend/holiday, or a provider whose first bar is a few days late, does not refetch every call.
+BACKFILL_TOLERANCE = timedelta(days=7)
 
 FetchFn = Callable[[datetime, datetime], pd.DataFrame]
+
+
+def _aware(d: datetime) -> datetime:
+    return d if d.tzinfo is not None else d.replace(tzinfo=UTC)
+
+
+def _meta_timestamp(raw: Any) -> datetime | None:
+    """Parse a timestamp stored in the metadata file; malformed values are treated as absent, never fatal."""
+    if raw in (None, ""):
+        return None
+    try:
+        return _aware(datetime.fromisoformat(str(raw)))
+    except (TypeError, ValueError):
+        log.warning("cache meta carries an unreadable timestamp %r; ignoring it", raw)
+        return None
 
 
 class ParquetBarCache:
@@ -132,30 +150,44 @@ class ParquetBarCache:
     ) -> pd.DataFrame:
         """Return up-to-date bars, fetching only what is missing plus an overlap window for re-validation."""
         cached = self.read(symbol, timeframe)
+        full_start = _aware(full_start)
+        has_cache = cached is not None and not cached.empty
         # Backfill: if a caller now needs older history than the cache was ever asked for (e.g. a shallow
-        # preflight fetch populated it first), refetch the full range. The requested start is remembered in the
-        # metadata so a genuinely short history (recent IPO) is not refetched on every call.
-        prev_req = self.meta(symbol, timeframe).get("full_start_requested")
+        # preflight fetch populated it first), fetch the full range and MERGE it under the cached bars. The
+        # requested start is remembered in the metadata so a genuinely short history (recent IPO, or a provider
+        # whose lookback is capped) is not refetched on every call.
+        prev_req = _meta_timestamp(self.meta(symbol, timeframe).get("full_start_requested"))
         needs_backfill = (
-            cached is not None and not cached.empty
-            and full_start < cached.index[0].to_pydatetime() - timedelta(days=7)
-            and (prev_req is None or full_start < datetime.fromisoformat(prev_req) - timedelta(days=7))
+            has_cache
+            and full_start < cached.index[0].to_pydatetime() - BACKFILL_TOLERANCE
+            and (prev_req is None or full_start < prev_req - BACKFILL_TOLERANCE)
         )
-        meta = {**(meta or {}), "full_start_requested": min(
-            [full_start] + ([datetime.fromisoformat(prev_req)] if prev_req else [])).isoformat()}
-        if needs_backfill:
-            log.info("%s/%s: cache starts %s but %s requested; backfilling", symbol, timeframe.value,
-                     cached.index[0].date(), full_start.date())
-        if (cached is not None and not cached.empty and not force and not needs_backfill
-                and self.is_fresh(symbol, timeframe, now, cal)):
+        earliest = min([full_start] + ([prev_req] if prev_req is not None else []))
+        meta = {**(meta or {}), "full_start_requested": earliest.isoformat()}
+        if has_cache and not force and not needs_backfill and self.is_fresh(symbol, timeframe, now, cal):
             return cached
-        if cached is None or cached.empty or force or needs_backfill:
+        if not has_cache or force:
             fresh = normalize_bars(fetch(full_start, now), symbol)
             if fresh.empty and cached is not None:
                 log.warning("%s/%s: fetch returned no bars; keeping stale cache", symbol, timeframe.value)
                 return cached
             self.write(symbol, timeframe, fresh, meta, now=now)
             return fresh
+        if needs_backfill:
+            log.info("%s/%s: cache starts %s but %s requested; backfilling", symbol, timeframe.value,
+                     cached.index[0].date(), full_start.date())
+            fresh = normalize_bars(fetch(full_start, now), symbol)
+            if fresh.empty:
+                log.warning("%s/%s: backfill returned no bars; keeping cache", symbol, timeframe.value)
+                return cached
+            # merge, never replace: a provider whose lookback is shorter than the cache (intraday spans) or that
+            # omits the latest bar must not erase rows the incremental path already accumulated
+            merged = pd.concat([cached, fresh])
+            merged = merged[~merged.index.duplicated(keep="last")].sort_index()[BAR_COLUMNS]
+            log.info("%s/%s: backfilled %d -> %d rows (first bar %s)", symbol, timeframe.value, len(cached),
+                     len(merged), merged.index[0].date())
+            self.write(symbol, timeframe, merged, meta, now=now)
+            return merged
         start_pos = max(0, len(cached) - overlap_bars)
         start = cached.index[start_pos].to_pydatetime()
         fresh = normalize_bars(fetch(start, now), symbol)
