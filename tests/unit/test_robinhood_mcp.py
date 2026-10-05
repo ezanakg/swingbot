@@ -543,3 +543,55 @@ def test_app_wires_robinhood_bars_in_live_and_falls_back_for_vix(config_dir, cal
         assert papp.data.providers[Timeframe.D1].name == "yfinance"
     finally:
         papp.close()
+
+
+def test_share_class_symbols_cross_the_wire_in_robinhood_dot_form(settings, cal):
+    """config/universe.yaml and yfinance write BRK-B; Robinhood wants BRK.B and rejects the dash form. Every
+    outbound symbol is converted and every inbound one converted back, so the bot never sees the dot form."""
+    assert rm.to_broker_symbol("BRK-B") == "BRK.B" and rm.to_broker_symbol("bf-b") == "BF.B"
+    assert rm.to_broker_symbol("AAPL") == "AAPL" and rm.to_broker_symbol("^VIX") == "^VIX"
+    assert rm.from_broker_symbol("BRK.B") == "BRK-B" and rm.from_broker_symbol("AAPL") == "AAPL"
+    assert rm.from_broker_symbol("X.Y.Z") == "X.Y.Z"  # only a single trailing class letter is a share class
+    tools = default_tools()
+    tools["get_equity_positions"] = lambda a: ok({"positions": [{**POSITION, "symbol": "BRK.B"}], "next": ""})
+    fake = FakeMcp(tools)
+    b = make_broker(settings, cal, fake)
+    b.login()
+    q = b.get_quote("BRK-B")
+    assert fake.calls[-1][1]["symbols"] == ["BRK.B"] and q.symbol == "BRK-B"
+    assert b.get_quote("BRK.B").symbol == "BRK-B"  # the broker form on the way in still answers in bot form
+    assert [p.symbol for p in b.get_positions()] == ["BRK-B"]
+    o = b.submit_order(OrderRequest(client_ref="bk1", symbol="BRK-B", side=Side.BUY, qty=1, order_type=OrderType.LIMIT,
+                                    limit_price=450.0))
+    assert tools["_placed"][-1]["symbol"] == "BRK.B" and o.symbol == "BRK-B"
+    b.find_recent_orders("BRK-B", AFTER_CLOSE)
+    assert fake.calls[-1][1]["symbol"] == "BRK.B"
+    recs = b.fetch_historicals(["BRK-B", "AAPL"], "day", "5year")
+    assert fake.calls[-1][1]["symbols"] == ["BRK.B", "AAPL"] and {r["symbol"] for r in recs} == {"BRK-B", "AAPL"}
+    b.get_earnings("BRK-B")
+    assert fake.calls[-1][1]["symbol"] == "BRK.B"
+
+
+def test_preflight_lists_every_live_symbol(cal, tmp_path):
+    """Regression: preflight showed the first ten tradable symbols and the operator read the eleventh as dropped."""
+    import argparse
+
+    from swingbot.app import build_app
+    from swingbot.cli import _preflight
+    from tests.conftest import make_config_dir
+
+    syms = [f"SY{i}" for i in range(12)]
+    cfg = make_config_dir(tmp_path / "p", syms + ["SPY"])
+    s = load_settings(cfg, env={"MODE": "live", "LIVE_TRADING_ACK": "I_UNDERSTAND_THE_RISKS",
+                                "LIVE_ALLOWED_SYMBOLS": ",".join(syms), "SESSION_ENC_KEY": KEY,
+                                "RH_SESSION_DIR": str(tmp_path / "sess")})
+    fake = FakeMcp(default_tools())
+    b = make_broker(s, cal, fake)
+    app = build_app(s, broker=b, providers={Timeframe.D1: b.provider, Timeframe.H1: b.provider},
+                    fallback_provider=b.provider, clock=lambda: b.now["now"], alert_channels=[], calendar=cal)
+    try:
+        out = _preflight(app, argparse.Namespace(review=None))
+    finally:
+        app.close()
+    assert "quotes (all 12 tradable symbols" in out
+    assert all(f"  {sym}: bid=" in out for sym in syms)

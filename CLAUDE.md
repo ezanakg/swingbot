@@ -55,6 +55,8 @@ pytest
 - Risk profiles are overlays in `config/profiles/<name>.yaml` applied by `load_settings`; keep `settings.yaml` as
   the standard account and put size-specific tuning in a profile.
 - New CLI behaviour gets a test through `cli.main` (see `tests/unit/test_cli_e2e.py`), not only a handler test.
+- Symbols are yfinance/universe.yaml form everywhere in the bot (share classes with a dash: BRK-B). Only the MCP
+  adapter converts to and from Robinhood's dot form (BRK.B) at the wire via `to_broker_symbol`/`from_broker_symbol`.
 
 ## Ideas for next sessions
 - Watch the operator's first live fills: confirm the stop quantity and the `ref_id` idempotency on the real server.

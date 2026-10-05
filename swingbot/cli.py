@@ -190,8 +190,13 @@ def _preflight(app: App, args: argparse.Namespace) -> str:
     lines.extend(f"  {o.broker_id} {o.symbol} {o.side.value} {o.qty:g} {o.order_type.value} limit={o.limit_price} "
                  f"stop={o.stop_price} {o.status.value}" for o in orders)
 
-    symbols = s.tradable_universe()[:10]
-    lines.append(f"quotes ({len(symbols)} of {len(s.tradable_universe())} tradable symbols):")
+    universe = s.tradable_universe()
+    limit = None if s.is_live else 25  # a live allowlist is short by construction; a paper watchlist can be long
+    symbols = universe if limit is None or len(universe) <= limit else universe[:limit]
+    shown = (f"all {len(universe)}" if len(symbols) == len(universe)
+             else f"first {len(symbols)} of {len(universe)}; shorten the watchlist to see the rest")
+    lines.append(f"quotes ({shown} tradable symbols; older than {s.quotes.max_age_sec}s or wider than "
+                 f"{s.quotes.max_spread_pct:.2%} is 'NOT usable now', which is normal outside regular hours):")
     for sym in symbols:
         try:
             q = broker.get_quote(sym)
