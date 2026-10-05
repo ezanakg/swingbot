@@ -23,10 +23,12 @@ Full history of the first build session: `docs/session-1-transcript.md`. README.
 - Live data comes from Robinhood: quotes always via the broker; bars via `data.providers: robinhood` (default
   since session 3), with yfinance as the automatic fallback (index symbols such as `^VIX`, unknown tickers, broker
   errors on the data path raise `ProviderError`, never a bare `BrokerError`). Paper mode uses yfinance.
-- 2026-10-05: the bot went live unattended on the operator's MacBook (cron, Discord alerts via PR #4, no trade
-  yet as of 16:00 ET). Next: move it to a Google Cloud e2-micro with `ops/gcp/bootstrap.sh` + `swingbotctl`
-  and the systemd timers; `swingbot auth --port N --no-browser` exists for the SSH-tunnel sign-in. One machine
-  per credential: Robinhood's refresh token is single-use.
+- 2026-10-05: the bot went live unattended, first on the operator's MacBook (cron), then moved the same day to a
+  Google Cloud e2-micro (`swingbot`, us-east1-b, Debian 12) via `ops/gcp/bootstrap.sh`; systemd timers run
+  manage/scan/report, `swingbotctl` is the operator's entry point, Discord carries alerts (PR #4). The Mac holds
+  no credential and no schedule any more. The repository is public. No trade yet as of 13:00 ET. One machine
+  per credential: Robinhood's refresh token is single-use; `swingbot auth --port N --no-browser` through an
+  SSH tunnel is the re-sign-in path.
 - Default is paper mode. Never set MODE=live, never add credentials, never place real orders from a cloud session.
 
 ## Setup

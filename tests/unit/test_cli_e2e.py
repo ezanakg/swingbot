@@ -91,6 +91,15 @@ def test_paper_commands_end_to_end(world, capsys):
     assert run(cfg, "halt", "--reason", "test") == cli.EXIT_OK
     assert run(cfg, "status") == cli.EXIT_OK and "halted=True" in capsys.readouterr().out
     assert run(cfg, "unhalt", "--reason", "done") == cli.EXIT_OK
+    # both manual breaker actions post an alert (the operator relies on Discord to see them), never de-duplicated
+    assert run(cfg, "halt", "--reason", "again") == cli.EXIT_OK
+    assert run(cfg, "unhalt", "--reason", "again") == cli.EXIT_OK
+    db = Database(world.settings.paths.db_path)
+    try:
+        titles = [a["title"] for a in Repository(db, RunMode.PAPER).alerts_since(clock.now - timedelta(days=1))]
+    finally:
+        db.close()
+    assert titles.count("circuit breaker halted manually") == 2 and titles.count("circuit breaker cleared manually") == 2
     assert run(cfg, "reconcile") == cli.EXIT_OK and "reconcile clean=" in capsys.readouterr().out
     assert run(cfg, "scan") == cli.EXIT_OK
     out = capsys.readouterr().out
