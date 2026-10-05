@@ -66,3 +66,16 @@ def test_heartbeat(tmp_path):
     assert not heartbeat_missed(p, 30, "scan", now + timedelta(hours=2))
     assert heartbeat_missed(p, 30, "scan", now + timedelta(hours=31))
     assert heartbeat_missed(p, 30, "manage", now)
+
+
+def test_channels_enable_from_env_secrets_alone():
+    from swingbot.monitoring.alerts import build_alert_manager
+    from swingbot.settings import AlertsConfig, Secrets
+
+    cfg = AlertsConfig()  # telegram/discord enabled: false, as in config/settings.yaml
+    assert build_alert_manager(cfg, Secrets(), "live").channels == []
+    am = build_alert_manager(cfg, Secrets(discord_webhook_url="https://discord.example/webhook"), "live")
+    assert [c.name for c in am.channels] == ["discord"]
+    am = build_alert_manager(cfg, Secrets(telegram_bot_token="tok", telegram_chat_id="1"), "live")
+    assert [c.name for c in am.channels] == ["telegram"]
+    assert build_alert_manager(cfg, Secrets(telegram_bot_token="tok"), "live").channels == []  # needs both
