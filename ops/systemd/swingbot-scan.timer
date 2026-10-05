@@ -1,0 +1,14 @@
+# /etc/systemd/system/swingbot-scan.timer -- after the close: screen, signal, size, queue entries for the next open.
+# Persistent=true: a scan missed while the machine was down runs as soon as it is back (a late scan is still on
+# closed bars; a stale quote simply defers the entry to the 09:35 manage pass).
+[Unit]
+Description=swingbot scan (16:15 ET, Mon-Fri)
+
+[Timer]
+Unit=swingbot@scan.service
+OnCalendar=Mon..Fri 16:15 America/New_York
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import logging
 import sys
 from dataclasses import replace
@@ -66,7 +67,11 @@ def _parser() -> argparse.ArgumentParser:
     u.add_argument("--reason", required=True)
     h = sub.add_parser("halt", help="engage a manual circuit breaker (no new entries)")
     h.add_argument("--reason", required=True)
-    sub.add_parser("auth", help="live only: interactive login to register this device with Robinhood")
+    au = sub.add_parser("auth", help="live only: interactive login to register this device with Robinhood")
+    au.add_argument("--port", type=int, default=None, metavar="PORT",
+                    help="fixed loopback port for the OAuth callback. On a headless server, forward it first from "
+                         "your laptop (`ssh -L PORT:127.0.0.1:PORT user@host`) and open the printed URL there.")
+    au.add_argument("--no-browser", action="store_true", help="only print the sign-in URL; never try to open a browser")
     sub.add_parser("status", help="print positions, open orders, breaker state and last runs")
     pf = sub.add_parser("preflight", help="read-only first-contact check: login, account, positions, orders, quotes, "
                                           "bars, earnings. Places NO orders.")
@@ -381,10 +386,16 @@ def _handlers(app: App, args: argparse.Namespace) -> tuple[RunKind, Callable[[st
     if args.command == "auth":
         def auth(rid: str) -> str:
             login = getattr(app.broker, "login")
+            wanted = {"interactive": True, "listen_port": args.port, "open_browser": not args.no_browser}
             try:
-                login(interactive=True)
-            except TypeError:
-                login()
+                accepted = inspect.signature(login).parameters
+            except (TypeError, ValueError):
+                accepted = {}
+            kwargs = {k: v for k, v in wanted.items() if k in accepted}
+            if args.port:
+                print(f"OAuth callback listening on 127.0.0.1:{args.port}. If this machine has no browser, run on your "
+                      f"laptop first:  ssh -L {args.port}:127.0.0.1:{args.port} <user>@<this host>  and open the URL there.")
+            login(**kwargs)
             return f"authenticated={app.broker.is_authenticated()}"
         # its own run kind: _run_mode must NOT do the usual non-interactive login first (it fails before a
         # credential exists, which is exactly the situation `auth` is for)

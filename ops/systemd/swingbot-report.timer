@@ -1,0 +1,12 @@
+# /etc/systemd/system/swingbot-report.timer -- daily summary to the alert channels; heartbeat check
+[Unit]
+Description=swingbot report (17:00 ET, Mon-Fri)
+
+[Timer]
+Unit=swingbot@report.service
+OnCalendar=Mon..Fri 17:00 America/New_York
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

@@ -241,7 +241,10 @@ All of these live in `swingbot/broker/robinhood.py`, the only module that import
 
 ## Operations
 
-* `ops/crontab.example` (cron, ET), `ops/systemd/` (templated `swingbot@<mode>.service` + timers),
+* `ops/crontab.example` (cron, ET), `ops/systemd/` (`swingbot@.service` + `swingbot-{manage,scan,report}.timer`
+  with their own `America/New_York` schedule), `ops/gcp/bootstrap.sh` + `swingbotctl` (one-shot setup of a Debian 12
+  VM such as Google Cloud's free `e2-micro`; see `docs/GO_LIVE.md` section 9a), `swingbot auth --port N --no-browser`
+  for signing in on a headless server through an SSH tunnel,
   `ops/windows_task.xml`, `ops/Dockerfile` + `ops/docker-compose.yml` (cron in the foreground, `var/` as a volume).
 * Each run takes `var/locks/swingbot.lock`; a second instance exits with code 5.
 * Exit codes: 0 ok · 1 error · 2 config error · 3 auth/MFA required · 4 cycle halted (kill switch, schema drift,

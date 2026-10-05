@@ -1,0 +1,27 @@
+# /etc/systemd/system/swingbot@.service -- templated: swingbot@scan, swingbot@manage, swingbot@report
+#
+# Settings and secrets are read by swingbot itself from /opt/swingbot/.env (python-dotenv), which allows inline
+# comments. Do NOT add EnvironmentFile= here: systemd would include those comments in the values (MODE="live # ...")
+# and every run would fail with a config error.
+[Unit]
+Description=swingbot %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=swingbot
+Group=swingbot
+WorkingDirectory=/opt/swingbot
+Environment=SWINGBOT_CONFIG_DIR=/opt/swingbot/config
+# the filesystem is read-only below except var/, so caches that libraries keep under $HOME must live there too
+Environment=HOME=/opt/swingbot/var/home
+Environment=XDG_CACHE_HOME=/opt/swingbot/var/cache
+ExecStart=/opt/swingbot/.venv/bin/swingbot %i
+TimeoutStartSec=1800
+# hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/swingbot/var
+UMask=0077

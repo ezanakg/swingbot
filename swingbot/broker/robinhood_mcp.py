@@ -468,8 +468,14 @@ class RobinhoodMcpBroker:
         self.client.reset()
 
     # ================================================================== auth
-    def login(self, interactive: bool = False) -> None:
+    def login(self, interactive: bool = False, listen_port: int | None = None, open_browser: bool = True) -> None:
+        """``interactive`` runs the browser sign-in. ``listen_port`` pins the loopback callback port so a headless
+        server can receive the redirect through an SSH tunnel; ``open_browser=False`` only prints the URL."""
         if interactive:
+            if listen_port:
+                self.oauth.listen_port = int(listen_port)
+            if not open_browser:
+                self.oauth.open_browser = lambda url: None
             timeout = max(300.0, float(self.settings.broker.auth_approval_timeout_sec))
             self.oauth.interactive_login(timeout_sec=timeout)
         elif self.store.load() is None:
