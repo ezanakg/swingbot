@@ -85,6 +85,7 @@ def test_paper_commands_end_to_end(world, capsys):
     cfg, cal, clock, quotes = world.cfg, world.cal, world.clock, world.quotes
     assert run(cfg, "status") == cli.EXIT_OK and "mode=paper" in capsys.readouterr().out
     assert run(cfg, "auth") == cli.EXIT_OK and "authenticated=True" in capsys.readouterr().out
+    assert run(cfg, "auth", "--port", "8765", "--no-browser") == cli.EXIT_OK  # paper broker ignores the extras
     assert run(cfg, "liquidate", "--confirm", "0") == cli.EXIT_OK  # nothing held: a no-op, not a crash
     assert run(cfg, "liquidate", "--confirm", "3") == cli.EXIT_ERROR  # wrong confirm count is refused
     assert run(cfg, "halt", "--reason", "test") == cli.EXIT_OK
@@ -158,7 +159,7 @@ def live(world, monkeypatch, tmp_path):
     interactive = []
 
     def fake_interactive_login(self, timeout_sec=300.0, print_fn=print):
-        interactive.append(timeout_sec)
+        interactive.append((timeout_sec, self.listen_port, self.open_browser("http://example.invalid") is None))
         cred = ma.McpCredential("cid", "at-browser", "rt-browser", self.clock() + 30 * 86400)
         self.store.save(cred)
         return cred
@@ -176,9 +177,10 @@ def test_live_auth_then_trading_commands_end_to_end(world, live, capsys):
     assert runs["scan"] == "AUTH_FAILED"
     # `auth` runs the browser flow WITHOUT a non-interactive login first (the operator's regression), then
     # verifies the session and the agentic account
-    assert run(cfg, "auth") == cli.EXIT_OK
+    assert run(cfg, "auth", "--port", "8765", "--no-browser") == cli.EXIT_OK
     out = capsys.readouterr().out
-    assert "authenticated=True" in out and live.interactive == [300.0]
+    assert "authenticated=True" in out and "ssh -L 8765:127.0.0.1:8765" in out
+    assert live.interactive == [(300.0, 8765, True)]  # pinned port, browser launch suppressed
     assert fake.initialized == 1 and fake.token_forms == []  # no refresh attempted before the browser flow
     assert fake.headers_seen[-1]["Authorization"] == "Bearer at-browser"
     assert last_runs(world.settings, RunMode.LIVE)["auth"] == "OK"

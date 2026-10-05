@@ -188,3 +188,25 @@ def test_refresh_rejection_paths(tmp_path):
     store.save(_cred(NOW + 10))
     with pytest.raises(TransientError):
         oauth.access_token()
+
+
+def test_interactive_login_can_pin_the_callback_port(tmp_path):
+    """A headless server signs in through an SSH tunnel, which needs a fixed loopback port."""
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    store = ma.McpCredentialStore(tmp_path / "s", KEY)
+    http_ = FakeHttp()
+    seen = {}
+
+    def open_browser(url):
+        seen["url"] = url
+        _hit_callback(url, code="abc", state=None)
+
+    oauth = ma.McpOAuth(store, http_, open_browser=open_browser, clock=lambda: NOW, listen_port=port)
+    oauth.interactive_login(timeout_sec=10, print_fn=lambda s: None)
+    assert http_.register_payloads[0]["redirect_uris"] == [f"http://127.0.0.1:{port}/callback"]
+    assert parse_qs(urlparse(seen["url"]).query)["redirect_uri"] == [f"http://127.0.0.1:{port}/callback"]
+    assert store.load().access_token == "at1"

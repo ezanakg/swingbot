@@ -206,6 +206,83 @@ Circuit breakers (daily loss, five-session drawdown, consecutive losers, peak-to
 the database and halt entries on their own; the consecutive-loser and drawdown breakers need `swingbot
 unhalt` to clear.
 
+## 9a. Hosting it on a Google Cloud e2-micro (free tier)
+
+The bot needs a machine that is awake five times a weekday, keeps `var/` on disk, and can reach Robinhood,
+yfinance and Discord. Google Cloud's Always Free tier gives one `e2-micro` (1 shared vCPU, 1 GB RAM, 30 GB
+standard disk) at $0 for as long as you stay inside the limits. A card goes on file; set a budget alert of $1 so
+any drift is visible. Everything below is a one-time move; afterwards nothing on your laptop is involved.
+
+**Free-tier constraints to respect:** machine type `e2-micro`; region `us-east1`, `us-central1` or `us-west1`;
+boot disk `pd-standard` (not balanced/SSD) of at most 30 GB; one such VM per account. Egress is 1 GB/month, far
+more than the bot uses.
+
+1. **Create the VM** (console or `gcloud`):
+
+   ```bash
+   gcloud compute instances create swingbot --zone=us-east1-b --machine-type=e2-micro \
+     --image-family=debian-12 --image-project=debian-cloud \
+     --boot-disk-size=30GB --boot-disk-type=pd-standard
+   gcloud compute ssh swingbot --zone=us-east1-b
+   ```
+
+   The default VPC firewall allows SSH only; keep it that way. The bot makes outbound connections only.
+
+2. **Bootstrap** on the VM (installs Python, swap, the `swingbot` service user, the checkout under
+   `/opt/swingbot`, the venv, the systemd units and the `swingbotctl` helper; no secrets):
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/<you>/swingbot/main/ops/gcp/bootstrap.sh -o bootstrap.sh
+   sudo bash bootstrap.sh https://github.com/<you>/swingbot.git main
+   ```
+
+3. **Stop the laptop first.** Robinhood's refresh token is single-use and rotates on every run: two machines
+   sharing one credential poison each other. On the laptop: remove the swingbot lines from `crontab -e`,
+   unload the keep-awake agent, and do not run any live command again from there.
+
+4. **Move the secrets.** From the laptop:
+
+   ```bash
+   gcloud compute scp .env var/session/robinhood_mcp.cred.enc swingbot:/tmp/ --zone=us-east1-b
+   gcloud compute ssh swingbot --zone=us-east1-b -- \
+     'sudo install -o swingbot -g swingbot -m 600 /tmp/.env /opt/swingbot/.env &&
+      sudo install -o swingbot -g swingbot -m 600 /tmp/robinhood_mcp.cred.enc /opt/swingbot/var/session/ &&
+      rm -f /tmp/.env /tmp/robinhood_mcp.cred.enc'
+   ```
+
+   `.env` carries the same `SESSION_ENC_KEY` the credential was sealed with, so the server can open it. Then
+   delete `var/session/` on the laptop.
+
+   If the credential will not refresh from the server (an auth failure in the next step), sign in fresh through
+   an SSH tunnel instead. The callback must land on the server, so pin the port and forward it: on the laptop
+   `gcloud compute ssh swingbot --zone=us-east1-b -- -L 8765:127.0.0.1:8765`, then in that session
+   `swingbotctl auth --port 8765 --no-browser`, open the printed URL in the laptop's browser, approve, and the
+   redirect to `127.0.0.1:8765` travels through the tunnel to the server.
+
+5. **Preflight on the server:** `swingbotctl preflight`. Same checks as section 7: the masked agentic account,
+   `broker tools: all present`, `risk_profile=small_account`, `provider=robinhood`, `source=robinhood_mcp`.
+   A successful preflight has already rotated the token to the server; the laptop's copy is now dead, which is
+   what you want.
+
+6. **Enable the schedule:**
+
+   ```bash
+   sudo systemctl enable --now swingbot-manage.timer swingbot-scan.timer swingbot-report.timer
+   swingbotctl timers        # next firing of each
+   swingbotctl logs          # journal of today's runs; the bot's own log is /opt/swingbot/var/logs/swingbot.log
+   ```
+
+   The timers carry `America/New_York`, so the VM's own timezone does not matter. A scan or report missed while
+   the VM was down runs as soon as it is back; a missed manage pass does not (the next one covers it).
+
+7. **Operating from now on:** `swingbotctl status`, `swingbotctl report`, `swingbotctl halt --reason ...`,
+   `swingbotctl pull` (fast-forward to main, reinstall, run the tests) when a change is merged. The kill switch
+   is `sudo -u swingbot touch /opt/swingbot/var/KILL_SWITCH`. Alerts and the daily summary keep arriving in
+   Discord exactly as before.
+
+**Not verified from here:** whether Robinhood's risk checks care that the agent now connects from a datacenter
+address. The first preflight from the VM is the test; the fallback is the tunnel sign-in in step 4.
+
 ## 10. What has and has not been verified
 
 Verified offline, in this repository's tests:

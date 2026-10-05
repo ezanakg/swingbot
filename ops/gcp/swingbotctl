@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Run swingbot as the service user with the same environment the systemd units use.
+#   swingbotctl status | preflight | auth --port 8765 --no-browser | scan | ...   any swingbot command
+#   swingbotctl pull            git pull --ff-only main, reinstall, run the test suite
+#   swingbotctl logs [since]    journal of every swingbot run (default: today), e.g. `swingbotctl logs yesterday`
+#   swingbotctl timers          next and last firing of the three timers
+set -euo pipefail
+INSTALL=/opt/swingbot
+RUN_AS=(sudo -u swingbot -H env "HOME=$INSTALL/var/home" "XDG_CACHE_HOME=$INSTALL/var/cache" "SWINGBOT_CONFIG_DIR=$INSTALL/config")
+
+case "${1:-}" in
+  "")
+    echo "usage: swingbotctl <swingbot command ...> | pull | logs [since] | timers" >&2
+    exit 6 ;;
+  pull)
+    exec "${RUN_AS[@]}" bash -c "cd '$INSTALL' && git pull --ff-only origin main && .venv/bin/pip install -q -e . && .venv/bin/python -m pytest -q -p no:cacheprovider" ;;
+  logs)
+    exec journalctl -u 'swingbot@*' --since "${2:-today}" --no-pager ;;
+  timers)
+    exec systemctl list-timers 'swingbot-*' --no-pager ;;
+  *)
+    exec "${RUN_AS[@]}" "$INSTALL/.venv/bin/swingbot" --config "$INSTALL/config" "$@" ;;
+esac

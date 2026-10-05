@@ -1,0 +1,14 @@
+# /etc/systemd/system/swingbot-manage.timer -- fills, stops, take-profits, exits during the session
+[Unit]
+Description=swingbot manage (09:35, 13:35, 15:45 ET, Mon-Fri)
+
+[Timer]
+Unit=swingbot@manage.service
+OnCalendar=Mon..Fri 09:35 America/New_York
+OnCalendar=Mon..Fri 13:35 America/New_York
+OnCalendar=Mon..Fri 15:45 America/New_York
+Persistent=false
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
