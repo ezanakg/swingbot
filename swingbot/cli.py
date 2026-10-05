@@ -374,9 +374,20 @@ def _handlers(app: App, args: argparse.Namespace) -> tuple[RunKind, Callable[[st
             return "liquidation orders:\n" + "\n".join(f"  {o.symbol} {o.status.value} {o.client_ref}" for o in orders)
         return RunKind.LIQUIDATE, liquidate
     if args.command == "unhalt":
-        return RunKind.UNHALT, lambda rid: f"breaker cleared: {app.engine.d.breaker.clear_manual(args.reason, app.clock()).detail}"
+        def unhalt(rid: str) -> str:
+            st = app.engine.d.breaker.clear_manual(args.reason, app.clock())
+            # key=rid: a manual action is never a duplicate of an earlier one, so it must not be de-duplicated
+            app.alerts.send(AlertSeverity.WARNING, "circuit breaker cleared manually", f"{st.detail}; new entries allowed again",
+                            key=rid)
+            return f"breaker cleared: {st.detail}"
+        return RunKind.UNHALT, unhalt
     if args.command == "halt":
-        return RunKind.HALT, lambda rid: f"breaker engaged: {app.engine.d.breaker.halt_manually(args.reason, app.clock()).detail}"
+        def halt(rid: str) -> str:
+            st = app.engine.d.breaker.halt_manually(args.reason, app.clock())
+            app.alerts.send(AlertSeverity.WARNING, "circuit breaker halted manually",
+                            f"{st.detail}; no new entries until `swingbot unhalt`; exits and stops still run", key=rid)
+            return f"breaker engaged: {st.detail}"
+        return RunKind.HALT, halt
     if args.command == "status":
         return RunKind.STATUS, lambda rid: _status(app)
     if args.command == "preflight":

@@ -236,6 +236,14 @@ more than the bot uses.
    sudo bash bootstrap.sh https://github.com/<you>/swingbot.git main
    ```
 
+   Both lines need the repository to be readable from the VM. With a **public** repository they work as
+   written. With a **private** one, `curl` gets a 404 and `git clone` is refused; either copy the script up
+   (`gcloud compute scp ops/gcp/bootstrap.sh swingbot:/tmp/`) and clone over SSH with a deploy key, or pass an
+   `https://<token>@github.com/...` URL built from a fine-grained read-only token. Making the repository public
+   is fine for the code: nothing in git is secret by design (`.env`, `var/` and the credential are ignored), but
+   check the history once before flipping it, and remember `docs/session-1-transcript.md` carries the author's
+   email.
+
 3. **Stop the laptop first.** Robinhood's refresh token is single-use and rotates on every run: two machines
    sharing one credential poison each other. On the laptop: remove the swingbot lines from `crontab -e`,
    unload the keep-awake agent, and do not run any live command again from there.
