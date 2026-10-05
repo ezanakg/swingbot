@@ -1,0 +1,50 @@
+# Risk profile: small_account
+#
+# An overlay applied ON TOP of settings.yaml when `risk_profile: small_account` is set there (or
+# SWINGBOT_RISK_PROFILE=small_account in the environment / .env). Keys here win over settings.yaml; nested
+# sections merge, so anything not listed keeps its settings.yaml value.
+#
+# Written for an Agentic account funded with roughly $50-$500 where the whole balance is the budget. The standard
+# profile cannot trade at that size: a $500 equity floor, an 8% position cap and a $200 minimum notional mean no
+# order is ever sized. This profile accepts that ONE position IS the portfolio, and sizes it as 1-3 whole shares.
+#
+# How it interacts with the rest of the engine (worked at $63.85 equity, live quotes of 2026-10-02):
+# * risk_per_trade_pct 0.06 and the 6% hard stop agree: a full stop-out costs about one position's 6%, i.e. ~5.4%
+#   of equity. The risk cap therefore rarely binds; the 90% notional cap does. Shares: 2 of a $21-28 name
+#   (CMCSA, T, PFE), 1 of a $33-54 name (NKE ... BAC). Nothing above ~$57 is affordable.
+# * Whole shares only. Robinhood's agent surface accepts fractional quantities for market orders in regular hours
+#   only, never for the limit/stop-limit orders this bot uses, and its order review does not validate that.
+# * regime.neutral_size_multiplier is 1.0 here: the standard 0.5 would round a 1-share position to 0 shares, so a
+#   NEUTRAL regime would simply never trade. The score bump (neutral_min_score_bump) still applies.
+# * Take-profit ladder: 50% of 1 share rounds to 0, so a 1-share position gets NO take-profit order and the
+#   protective stop covers the full quantity; a 2-share position rests 1 share at +2R and the stop covers the other.
+# * Circuit breakers are widened because one stop-out is ~5.4% of equity: the standard 3%/6%/15% would halt after
+#   a single ordinary down day, after one losing trade, and after three. Expressed in multiples of the per-trade
+#   risk (R ~ 5.4%): daily 8% ~ 1.5R, five-session 12% ~ 2R, peak-to-trough 25% ~ 4.5R. Four consecutive losers
+#   still require a manual `swingbot unhalt`.
+# * min_equity_to_trade 50 is the floor below which the bot stops opening positions (about four straight
+#   stop-outs from $64). min_position_notional 10 only rejects sub-$10 orders.
+#
+# Use `swingbot suggest-allowlist` to list watchlist names affordable at the current equity.
+
+account:
+  fractional_shares: false
+
+risk:
+  risk_per_trade_pct: 0.06
+  max_position_pct: 0.90
+  cash_buffer_pct: 0.05
+  max_sector_exposure_pct: 0.95
+  max_open_positions: 1
+  max_positions_per_strategy: 1
+  max_new_entries_per_day: 1
+  min_equity_to_trade: 50
+  min_position_notional: 10
+
+regime:
+  neutral_size_multiplier: 1.0
+
+circuit_breakers:
+  daily_loss_halt_pct: 0.08
+  weekly_loss_halt_pct: 0.12
+  max_drawdown_halt_pct: 0.25

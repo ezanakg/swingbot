@@ -45,7 +45,8 @@ swingbot scan                   # paper: screens the watchlist, generates signal
 swingbot manage                 # paper: fills resting orders against quotes, manages stops
 swingbot report                 # daily summary (weekly section on Fridays or --weekly)
 swingbot preflight              # read-only check of the configured broker: login, account, orders, quotes, bars
-pytest                          # 90 tests, no network
+swingbot suggest-allowlist      # which watchlist names the account can afford in whole shares (see Risk profiles)
+pytest                          # 103 tests, no network
 ```
 
 Paper mode uses **yfinance** for bars and (delayed) quotes and a simulated broker whose state lives in the same
@@ -132,7 +133,24 @@ and sells at `bid − 0.3%`; after two failed attempts it escalates to the emerg
 
 > Robinhood holds shares against *each* open sell order, so a full-size stop and a 50% take-profit cannot rest
 > simultaneously. The stop therefore covers `qty − take-profit qty` while a take-profit rests, and is re-sized when
-> the ladder fills. This is documented behaviour, not a bug.
+> the ladder fills. This is documented behaviour, not a bug. With a 1-share position the ladder's 50% rounds to
+> zero, so no take-profit is placed and the stop covers the whole position.
+
+### Risk profiles (`config/profiles/`)
+
+`risk_profile: <name>` in `settings.yaml` (or `SWINGBOT_RISK_PROFILE=<name>` in the environment) applies
+`config/profiles/<name>.yaml` **on top of** `settings.yaml`: keys in the overlay win, nested sections merge, and
+everything else keeps its value. The active profile and the keys it changed are logged at startup and shown by
+`swingbot preflight`.
+
+| Profile | For | What it changes |
+| --- | --- | --- |
+| `standard` (default) | accounts from a few thousand dollars up | nothing; the values in `settings.yaml` apply |
+| `small_account` | an Agentic account funded with ~$50–500 where the whole balance is the budget | one position at up to 90% of equity, 6% risk per trade (= one stop-out), $50 equity floor, $10 minimum notional, NEUTRAL regime sizes at 1.0 (0.5 would round 1 share to 0), breakers widened to 8% / 12% / 25% (≈1.5 R / 2 R / 4.5 R at that risk), whole shares only |
+
+`swingbot suggest-allowlist [--equity E] [--min-shares N]` lists the watchlist names affordable in whole shares
+under the active profile's caps (from the last daily close) and prints a ready-to-paste `LIVE_ALLOWED_SYMBOLS=`
+line; names affordable at two or more shares can also carry the take-profit ladder.
 
 ### Screening (`config/universe.yaml`)
 
@@ -148,9 +166,14 @@ excluded. Every exclusion reason is persisted per symbol per day in `screens`.
 
 * Canonical frame: UTC `DatetimeIndex` named `ts`, float64 `open high low close volume`, sorted, unique. A bar's
   `ts` is the start of its interval; daily bars are stamped at the session open.
-* Providers: `robinhood` (via the broker adapter, 5-year daily / ~3-month hourly, not reliably adjusted) and
-  `yfinance` (adjusted; fallback and backtest source). Choice per timeframe in `settings.yaml`; the provider that
-  served each request is recorded in the cache metadata and logs.
+* Providers: `robinhood` (via the live broker adapter: the official MCP server serves split-adjusted bars for any
+  explicit range, the web API 5-year daily / ~3-month hourly not reliably adjusted) and `yfinance` (adjusted;
+  fallback and backtest source). The default is `robinhood` for bars so signals and fills come from the same
+  feed; paper mode has no broker feed and uses yfinance automatically. Anything the broker cannot serve (index
+  symbols such as `^VIX`, an unknown ticker, a broker error on the data path) falls back to `yfinance` with a
+  warning. The provider that served each request is recorded in the cache metadata, the logs and `preflight`.
+* Quotes: in live mode always the broker's (the MCP server's real-time NBBO quote, after-hours print when the
+  market is closed); in paper mode yfinance's delayed quote.
 * 4h bars: hourly bars aggregated into `09:30–13:30` and `13:30–16:00` ET bins (the second bin is 2.5h; on early-close
   days the first bin ends at the close). Weekly bars: Mon–Fri, labelled by the last session's open.
 * Cache: parquet per symbol/timeframe under `var/data/bars`, incremental (re-fetches the last 5 bars to catch late

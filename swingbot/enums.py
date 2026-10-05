@@ -76,7 +76,11 @@ class RunKind(str, Enum):
     BACKTEST = "backtest"
     LIQUIDATE = "liquidate"
     UNHALT = "unhalt"
+    HALT = "halt"
     AUTH = "auth"
+    STATUS = "status"
+    PREFLIGHT = "preflight"
+    ALLOWLIST = "allowlist"
 
 
 class Timeframe(str, Enum):

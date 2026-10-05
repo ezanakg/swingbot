@@ -139,6 +139,56 @@ Run preflight again during market hours so you see usable quotes at least once.
 5. Install the schedule from `ops/crontab.example` (or the systemd timer / Windows task). The cron lines run
    `scan` after the close and `manage` through the session, each under the instance lock.
 
+## 8a. Small budgets: the `small_account` profile
+
+The standard risk settings assume a few thousand dollars. Below roughly $500 they refuse every trade: a $500
+equity floor, an 8% position cap (a $5 position at $64 equity) and a $200 minimum notional. If the whole balance
+of the Agentic account is the budget, switch on the profile instead of editing numbers one by one:
+
+```
+SWINGBOT_RISK_PROFILE=small_account      # in .env, or `risk_profile: small_account` in settings.yaml
+```
+
+It applies `config/profiles/small_account.yaml` over `settings.yaml` (the file explains every value). What it
+means in practice at about $64 of equity:
+
+* **One position is the portfolio.** Up to 90% of equity in one name, 1 open position, 1 new entry per day.
+  At the 2026-10-02 quotes that is 2 shares of CMCSA, T or PFE and 1 share of NKE, XLU, XLRE, VZ, SLB, XLB,
+  XLF or BAC; nothing above ~$57 is affordable. `swingbot suggest-allowlist` prints this list for the current
+  equity and a `LIVE_ALLOWED_SYMBOLS=` line to paste.
+* **Risk per trade is one stop-out.** 6% of equity, which is what the 6% hard stop on a 90% position costs.
+* **Whole shares only.** Robinhood's agent surface accepts fractional quantities for market orders in regular
+  hours only, never for the limit and stop-limit orders this bot uses, and its order review does not check
+  that (the dry run accepted fractional quantities and a sale of shares not held). Do not enable
+  `account.fractional_shares`.
+* **The take-profit ladder needs 2 shares.** With 1 share, 50% rounds to zero: no take-profit rests and the
+  protective stop covers the whole position. With 2 shares, 1 rests at +2 R and the stop covers the other.
+* **NEUTRAL regime still trades.** The standard half-size multiplier would round 1 share to 0, so the profile
+  sizes at 1.0 and keeps only the higher score bar.
+* **Breakers are widened, not removed.** 8% daily, 12% over five sessions, 25% peak-to-trough: about 1.5, 2 and
+  4.5 stop-outs. The standard 3% / 6% / 15% would halt on a single 3.6% down day, after one losing trade and
+  after three. Four consecutive losers still need `swingbot unhalt`.
+* **The floor is $50.** Below `min_equity_to_trade` the bot stops opening positions (about five straight
+  stop-outs from $64). Top up or stop.
+
+Expect 1-share trades to be noisy: a $1.50 move is 2.5% of the account. The profile keeps the stops, the
+reconciliation and the audit trail exactly as they are for a large account; only the sizing and the breaker
+thresholds change.
+
+## 8b. Where live data comes from
+
+In live mode everything the bot trades on comes from Robinhood through the same MCP session as the orders:
+
+| Data | Live source | Notes |
+| --- | --- | --- |
+| Quotes (entries, exits, stops, spread screen) | `get_equity_quotes` | real-time bid/ask/last; after the close the newest after-hours print is used, and a stale quote defers the order to the 09:35 pass |
+| Daily and hourly bars (indicators, ATR, regime) | `get_equity_historicals`, split-adjusted | `data.providers` defaults to `robinhood`; the cache fetches only the bars it is missing |
+| Earnings dates (screen) | `get_earnings_results` | |
+| `^VIX` for the regime filter, anything the broker cannot serve | yfinance (`data.fallback_provider`) | the equity tool has no index data; the fallback is automatic and logged |
+
+Paper mode has no broker feed, so the same configuration uses yfinance for bars and quotes. `swingbot preflight`
+prints `provider=` for the bar sample and `source=` for each quote, so you can see which feed answered.
+
 ## 9. Operating it
 
 | Need | Do |
@@ -148,6 +198,7 @@ Run preflight again during market hours so you see usable quotes at least once.
 | Flatten everything (manual, emergency) | `swingbot liquidate --confirm` |
 | See what the bot thinks | `swingbot status`; `swingbot report` |
 | Re-check the broker connection | `swingbot preflight` |
+| See which names the balance can buy | `swingbot suggest-allowlist` |
 | Re-authenticate | `swingbot auth` (needed after revoking the agent or a long idle gap) |
 | Grow the budget | Move more cash into the Agentic account in the app, then widen `LIVE_ALLOWED_SYMBOLS` and `risk.max_open_positions` one step at a time |
 

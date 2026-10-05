@@ -20,9 +20,9 @@ paths:                         # relative paths resolve against the directory th
 
 data:
   providers:                   # provider per timeframe: robinhood | yfinance
-    "1d": yfinance
-    "1h": yfinance
-  fallback_provider: yfinance
+    "1d": robinhood            # live: the broker's own split-adjusted bars, the same feed the bot's quotes come from
+    "1h": robinhood            # paper mode has no broker feed and uses the fallback automatically
+  fallback_provider: yfinance  # serves what the primary cannot (index symbols such as ^VIX) or when it errors
   lookback_buffer: 30          # extra bars fetched beyond strategy warmup
   cache_ttl_daily_after_et: "16:10"
   cache_ttl_4h_minutes: 15
