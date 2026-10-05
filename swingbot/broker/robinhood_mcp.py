@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
@@ -171,6 +172,24 @@ def _qty_str(qty: float, allow_fractional: bool) -> str:
 def mask_account(number: Any) -> str:
     s = str(number or "")
     return f"••••{s[-4:]}" if len(s) >= 4 else "••••"
+
+
+# Share classes: the bot (and yfinance, and config/universe.yaml) write BRK-B; Robinhood writes BRK.B and rejects
+# the dash form with "missing_instruments". Every symbol crossing the wire goes through one of these two.
+_CLASS_OUT = re.compile(r"^([A-Z]+)-([A-Z])$")
+_CLASS_IN = re.compile(r"^([A-Z]+)\.([A-Z])$")
+
+
+def to_broker_symbol(symbol: str) -> str:
+    s = str(symbol or "").upper().strip()
+    m = _CLASS_OUT.match(s)
+    return f"{m.group(1)}.{m.group(2)}" if m else s
+
+
+def from_broker_symbol(symbol: Any) -> str:
+    s = str(symbol or "").upper().strip()
+    m = _CLASS_IN.match(s)
+    return f"{m.group(1)}-{m.group(2)}" if m else s
 
 
 def _cursor_from_next(nxt: Any) -> str | None:
@@ -561,7 +580,7 @@ class RobinhoodMcpBroker:
         sells: dict[tuple[date, str], int] = {}
         for raw in self._list_orders(state="filled", created_at_gte=since):
             when = _ts(raw.get("last_transaction_at") or raw.get("created_at"), now)
-            key = (self.cal.session_date_of(when), str(raw.get("symbol", "")).upper())
+            key = (self.cal.session_date_of(when), from_broker_symbol(raw.get("symbol", "")))
             side = str(raw.get("side", "")).lower()
             if side == "buy":
                 buys[key] = buys.get(key, 0) + 1
@@ -586,7 +605,7 @@ class RobinhoodMcpBroker:
                 qty = _f(_req(r, "quantity", "position"))
                 if qty <= 0:
                     continue
-                symbol = str(_req(r, "symbol", "position")).upper()
+                symbol = from_broker_symbol(_req(r, "symbol", "position"))
                 avg = r.get("average_buy_price")
                 if avg in (None, ""):
                     log.warning("%s: position still reconciling at the broker (no average cost yet)", symbol)
@@ -622,7 +641,7 @@ class RobinhoodMcpBroker:
         created = _ts(raw["created_at"])
         avg = raw["average_price"]
         return Order(
-            broker_id=str(raw["id"]), client_ref=client_ref or f"ext-{raw['id']}", symbol=str(raw["symbol"]).upper(),
+            broker_id=str(raw["id"]), client_ref=client_ref or f"ext-{raw['id']}", symbol=from_broker_symbol(raw["symbol"]),
             side=Side(str(raw["side"]).lower()), qty=qty, order_type=order_type,
             limit_price=_f(raw["price"]) if raw["price"] not in (None, "") else None,
             stop_price=_f(raw["stop_price"]) if raw["stop_price"] not in (None, "") else None, tif=tif,
@@ -641,7 +660,7 @@ class RobinhoodMcpBroker:
         if state:
             base["state"] = state
         if symbol:
-            base["symbol"] = symbol.upper()
+            base["symbol"] = to_broker_symbol(symbol)
         if created_at_gte is not None:
             base["created_at_gte"] = created_at_gte.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         rows: list[dict[str, Any]] = []
@@ -678,7 +697,7 @@ class RobinhoodMcpBroker:
     def _order_args(self, request: OrderRequest) -> dict[str, Any]:
         if request.order_type == OrderType.TRAILING_STOP:
             raise ClientError("native trailing stops are not used; trailing is emulated by manage via cancel/replace")
-        symbol = request.symbol.upper()
+        symbol = to_broker_symbol(request.symbol)
         args: dict[str, Any] = {
             "account_number": self._account_number(),
             "symbol": symbol,
@@ -733,7 +752,7 @@ class RobinhoodMcpBroker:
     def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
         out: dict[str, Quote] = {}
         for i in range(0, len(symbols), 20):
-            chunk = [s.upper() for s in symbols[i:i + 20]]
+            chunk = [to_broker_symbol(s) for s in symbols[i:i + 20]]
             data = self._data(self._call(TOOLS["quotes"], {"symbols": chunk}, cost=self.costs.get("quotes", 1),
                                          describe="quotes"), "quotes")
             for item in _req(data, "results", "quotes") or []:
@@ -747,7 +766,7 @@ class RobinhoodMcpBroker:
     def _quote_from_raw(self, q: dict[str, Any]) -> Quote | None:
         for k in ("symbol", "bid_price", "ask_price", "last_trade_price", "venue_last_trade_time"):
             _req(q, k, "quote")
-        symbol = str(q["symbol"]).upper()
+        symbol = from_broker_symbol(q["symbol"])
         if str(q.get("state", "active")).lower() != "active":
             log.warning("%s: instrument state %s; quote unusable", symbol, q.get("state"))
             return None
@@ -764,7 +783,7 @@ class RobinhoodMcpBroker:
 
     def get_quote(self, symbol: str) -> Quote:
         quotes = self.get_quotes([symbol])
-        q = quotes.get(symbol.upper())
+        q = quotes.get(from_broker_symbol(to_broker_symbol(symbol)))  # canonical bot form (BRK-B), either way in
         if q is None:
             raise ClientError(f"no usable quote for {symbol} (unknown, halted or never traded)", status=404)
         return q
@@ -779,7 +798,7 @@ class RobinhoodMcpBroker:
         fall back to yfinance (index symbols such as ``^VIX`` never reach the equity tool at all). Auth failures
         still propagate: a dead session must not be papered over by the fallback.
         """
-        wanted = [s.upper() for s in symbols]
+        wanted = [to_broker_symbol(s) for s in symbols]
         indexes = [s for s in wanted if s.startswith("^")]
         if indexes:
             log.info("historicals: %s are index symbols; the equity historicals tool cannot serve them", indexes)
@@ -809,13 +828,13 @@ class RobinhoodMcpBroker:
                 for item in _req(data, "results", "historicals") or []:
                     if not isinstance(item, dict):
                         continue
-                    sym = str(_req(item, "symbol", "historicals")).upper()
+                    sym = from_broker_symbol(_req(item, "symbol", "historicals"))
                     for bar in _req(item, "bars", "historicals") or []:
                         if isinstance(bar, dict):
                             rec = dict(bar)
                             rec["symbol"] = sym
                             out.append(rec)
-                missing.extend(str(m).upper() for m in (data.get("not_found") or []))
+                missing.extend(from_broker_symbol(m) for m in (data.get("not_found") or []))
         except AuthError:
             raise
         except BrokerError as exc:
@@ -830,7 +849,7 @@ class RobinhoodMcpBroker:
         return self.provider.get_bars(symbol, timeframe, start, end)
 
     def get_earnings(self, symbol: str) -> list[date]:
-        data = self._data(self._call(TOOLS["earnings"], {"symbol": symbol.upper()}, cost=1, describe="earnings"),
+        data = self._data(self._call(TOOLS["earnings"], {"symbol": to_broker_symbol(symbol)}, cost=1, describe="earnings"),
                           "earnings")
         results = [r for r in (_req(data, "results", "earnings") or []) if isinstance(r, dict)
                    and isinstance(r.get("report"), dict)]
