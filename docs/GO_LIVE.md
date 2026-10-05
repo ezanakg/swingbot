@@ -175,6 +175,20 @@ Expect 1-share trades to be noisy: a $1.50 move is 2.5% of the account. The prof
 reconciliation and the audit trail exactly as they are for a large account; only the sizing and the breaker
 thresholds change.
 
+## 8b. Where live data comes from
+
+In live mode everything the bot trades on comes from Robinhood through the same MCP session as the orders:
+
+| Data | Live source | Notes |
+| --- | --- | --- |
+| Quotes (entries, exits, stops, spread screen) | `get_equity_quotes` | real-time bid/ask/last; after the close the newest after-hours print is used, and a stale quote defers the order to the 09:35 pass |
+| Daily and hourly bars (indicators, ATR, regime) | `get_equity_historicals`, split-adjusted | `data.providers` defaults to `robinhood`; the cache fetches only the bars it is missing |
+| Earnings dates (screen) | `get_earnings_results` | |
+| `^VIX` for the regime filter, anything the broker cannot serve | yfinance (`data.fallback_provider`) | the equity tool has no index data; the fallback is automatic and logged |
+
+Paper mode has no broker feed, so the same configuration uses yfinance for bars and quotes. `swingbot preflight`
+prints `provider=` for the bar sample and `source=` for each quote, so you can see which feed answered.
+
 ## 9. Operating it
 
 | Need | Do |

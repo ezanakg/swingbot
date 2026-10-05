@@ -1,16 +1,21 @@
-"""Robinhood historicals via an injected fetcher (the broker adapter), so this module never imports robin_stocks.
+"""Robinhood historicals via an injected fetcher (a broker adapter), so this module never imports robin_stocks
+or speaks MCP. Both adapters return the same record shape.
 
-ASSUMPTIONS about the unofficial API (isolated here; drift surfaces as ``ProviderError`` and an alert):
-* ``quotes/historicals`` accepts ``interval`` in {5minute,10minute,hour,day,week} and ``span`` in
-  {day,week,month,3month,year,5year}; returned lookback is bounded by span regardless of requested start.
+ASSUMPTIONS (isolated here; drift surfaces as ``ProviderError`` and an alert):
+* The fetcher accepts ``interval`` in {5minute,10minute,hour,day,week} and ``span`` in
+  {day,week,month,3month,year,5year}. The unofficial web API bounds the lookback by span and ignores any start;
+  the official MCP server takes an explicit start, so a fetcher that declares a ``start`` parameter receives the
+  caller's start (the cache's incremental or backfill request) and the span is only its default lookback.
 * Each record has ``begins_at`` (ISO-8601 Z), ``open_price``/``close_price``/``high_price``/``low_price`` as
   strings, ``volume`` (int), ``session`` in {pre,reg,post}, ``interpolated`` (bool).
 * Daily ``begins_at`` is either midnight UTC or the session open; we handle both.
-* Prices are *not* reliably split-adjusted; the frame is tagged ``is_adjusted=False`` and the quality layer's
-  split detector invalidates the cache when a split is seen.
+* Web-API prices are *not* reliably split-adjusted (``is_adjusted=False``); the MCP server serves split-adjusted
+  bars and says so through ``fetcher.historicals_adjusted``. Either way the quality layer's split detector
+  invalidates the cache when a split is seen.
 """
 from __future__ import annotations
 
+import inspect
 import logging
 from datetime import datetime, time as dtime, timezone
 from typing import Protocol
@@ -43,12 +48,22 @@ class RobinhoodProvider:
         self.fetcher = fetcher
         self.cal = cal
         self.batch_size = batch_size
+        try:
+            self._fetcher_takes_start = "start" in inspect.signature(fetcher.fetch_historicals).parameters
+        except (TypeError, ValueError):  # builtins / mocks without a signature
+            self._fetcher_takes_start = False
+        self.adjusted = bool(getattr(fetcher, "historicals_adjusted", False))
+
+    def _fetch(self, symbols: list[str], interval: str, span: str, start: datetime) -> list[dict]:
+        if self._fetcher_takes_start:
+            return self.fetcher.fetch_historicals(symbols, interval, span, start=start)  # type: ignore[call-arg]
+        return self.fetcher.fetch_historicals(symbols, interval, span)
 
     def get_bars(self, symbol: str, timeframe: Timeframe, start: datetime, end: datetime) -> pd.DataFrame:
         if timeframe == Timeframe.H4:
             return self._tag(resample_to_4h(self.get_bars(symbol, Timeframe.H1, start, end), self.cal), symbol, timeframe)
         interval, span = TF_MAP[timeframe]
-        records = self.fetcher.fetch_historicals([symbol], interval, span)
+        records = self._fetch([symbol], interval, span, start)
         return self._to_frame([r for r in records if str(r.get("symbol", symbol)).upper() == symbol.upper()],
                               symbol, timeframe, start, end)
 
@@ -62,7 +77,7 @@ class RobinhoodProvider:
         for i in range(0, len(symbols), self.batch_size):
             chunk = symbols[i:i + self.batch_size]
             try:
-                records = self.fetcher.fetch_historicals(chunk, interval, span)
+                records = self._fetch(chunk, interval, span, start)
             except ProviderError as exc:
                 log.error("robinhood historicals failed for %s: %s", chunk, exc)
                 continue
@@ -117,7 +132,7 @@ class RobinhoodProvider:
         df = df[(df.index >= pd.Timestamp(start.astimezone(timezone.utc))) & (df.index <= pd.Timestamp(end.astimezone(timezone.utc)))]
         return self._tag(df, symbol, timeframe)
 
-    @staticmethod
-    def _tag(df: pd.DataFrame, symbol: str, timeframe: Timeframe) -> pd.DataFrame:
-        df.attrs.update({"symbol": symbol, "provider": "robinhood", "is_adjusted": False, "timeframe": timeframe.value})
+    def _tag(self, df: pd.DataFrame, symbol: str, timeframe: Timeframe) -> pd.DataFrame:
+        df.attrs.update({"symbol": symbol, "provider": "robinhood", "is_adjusted": self.adjusted,
+                         "timeframe": timeframe.value})
         return df

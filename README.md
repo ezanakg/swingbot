@@ -166,9 +166,14 @@ excluded. Every exclusion reason is persisted per symbol per day in `screens`.
 
 * Canonical frame: UTC `DatetimeIndex` named `ts`, float64 `open high low close volume`, sorted, unique. A bar's
   `ts` is the start of its interval; daily bars are stamped at the session open.
-* Providers: `robinhood` (via the broker adapter, 5-year daily / ~3-month hourly, not reliably adjusted) and
-  `yfinance` (adjusted; fallback and backtest source). Choice per timeframe in `settings.yaml`; the provider that
-  served each request is recorded in the cache metadata and logs.
+* Providers: `robinhood` (via the live broker adapter: the official MCP server serves split-adjusted bars for any
+  explicit range, the web API 5-year daily / ~3-month hourly not reliably adjusted) and `yfinance` (adjusted;
+  fallback and backtest source). The default is `robinhood` for bars so signals and fills come from the same
+  feed; paper mode has no broker feed and uses yfinance automatically. Anything the broker cannot serve (index
+  symbols such as `^VIX`, an unknown ticker, a broker error on the data path) falls back to `yfinance` with a
+  warning. The provider that served each request is recorded in the cache metadata, the logs and `preflight`.
+* Quotes: in live mode always the broker's (the MCP server's real-time NBBO quote, after-hours print when the
+  market is closed); in paper mode yfinance's delayed quote.
 * 4h bars: hourly bars aggregated into `09:30–13:30` and `13:30–16:00` ET bins (the second bin is 2.5h; on early-close
   days the first bin ends at the close). Weekly bars: Mon–Fri, labelled by the last session's open.
 * Cache: parquet per symbol/timeframe under `var/data/bars`, incremental (re-fetches the last 5 bars to catch late

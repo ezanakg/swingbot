@@ -10,7 +10,7 @@ import swingbot.broker.robinhood_mcp as rm
 from swingbot.broker import mcp_auth as ma
 from swingbot.broker.ratelimit import TokenBucket
 from swingbot.broker.retry import AmbiguousError, AuthError, BrokerSchemaDrift, ClientError, TransientError
-from swingbot.enums import AccountType, OrderStatus, OrderType, Side, TimeInForce
+from swingbot.enums import AccountType, OrderStatus, OrderType, Side, Timeframe, TimeInForce
 from swingbot.models import OrderRequest
 from swingbot.settings import load_settings
 
@@ -466,3 +466,80 @@ def test_preflight_command_is_read_only(settings, cal, tmp_path):
     assert tools["_placed"] == [] and not any(n in ("place_equity_order", "cancel_equity_order") for n, _ in fake.calls)
     review = next(a for n, a in fake.calls if n == "review_equity_order")
     assert review["quantity"] == "1" and "ref_id" not in review
+
+
+def test_historicals_honour_start_and_degrade_to_provider_errors(settings, cal):
+    """The data path raises ProviderError (so the service falls back to yfinance), never a bare BrokerError;
+    index symbols never reach the equity tool; the cache's start bounds the request."""
+    from swingbot.data.provider import ProviderError
+
+    tools = default_tools()
+
+    def hist(a):
+        found = [s for s in a["symbols"] if s != "ZZZZ"]
+        res = {"results": [{"symbol": s, "interval": a["interval"], "bounds": "regular", "bars": [BAR]} for s in found]}
+        if len(found) < len(a["symbols"]):
+            res["not_found"] = [s for s in a["symbols"] if s == "ZZZZ"]
+        return ok(res)
+
+    tools["get_equity_historicals"] = hist
+    fake = FakeMcp(tools)
+    b = make_broker(settings, cal, fake)
+    b.login()
+    b.fetch_historicals(["AAPL"], "day", "5year", start=datetime(2026, 9, 25, 13, 30, tzinfo=timezone.utc))
+    assert fake.calls[-1][1]["start_time"] == "2026-09-24T13:30:00Z"  # start honoured, one day of margin
+    b.fetch_historicals(["AAPL"], "day", "5year")
+    assert fake.calls[-1][1]["start_time"] == "2021-09-28T20:15:00Z"  # no start: the span is the lookback
+    n = len(fake.calls)
+    with pytest.raises(ProviderError, match="index symbols"):
+        b.fetch_historicals(["^VIX"], "day", "5year")
+    assert len(fake.calls) == n  # no call was made
+    with pytest.raises(ProviderError, match="not found"):
+        b.fetch_historicals(["ZZZZ"], "day", "5year")
+    assert [r["symbol"] for r in b.fetch_historicals(["AAPL", "ZZZZ", "^VIX"], "day", "5year")] == ["AAPL"]
+    tools["get_equity_historicals"] = lambda a: ToolError("upstream exploded")
+    with pytest.raises(ProviderError, match="upstream exploded"):
+        b.fetch_historicals(["AAPL"], "day", "5year")
+    tools["get_equity_historicals"] = hist
+    # through the provider: start is passed along, frames are tagged split-adjusted
+    df = b.provider.get_bars("AAPL", Timeframe.D1, datetime(2026, 9, 1, tzinfo=timezone.utc),
+                             datetime(2026, 10, 2, tzinfo=timezone.utc))
+    assert len(df) == 1 and df.attrs["is_adjusted"] is True and df.attrs["provider"] == "robinhood"
+    assert fake.calls[-1][1]["start_time"] == "2026-08-31T00:00:00Z"
+
+
+def test_app_wires_robinhood_bars_in_live_and_falls_back_for_vix(config_dir, cal, tmp_path):
+    """With data.providers=robinhood, live mode serves bars from the broker and routes ^VIX to the fallback;
+    paper mode has no broker feed and uses the fallback for everything."""
+    from datetime import date
+
+    from swingbot.app import build_app
+    from tests.conftest import make_daily_bars
+    from tests.integration.test_paper_cycle import SynthProvider
+
+    cfg = __import__("tests.conftest", fromlist=["make_config_dir"]).make_config_dir(
+        tmp_path / "rh", ["AAPL", "MSFT", "SPY"], data={"providers": {"1d": "robinhood", "1h": "robinhood"}})
+    live = load_settings(cfg, env={"MODE": "live", "LIVE_TRADING_ACK": "I_UNDERSTAND_THE_RISKS",
+                                   "LIVE_ALLOWED_SYMBOLS": "AAPL", "SESSION_ENC_KEY": KEY,
+                                   "RH_SESSION_DIR": str(tmp_path / "sess")})
+    fake = FakeMcp(default_tools())
+    b = make_broker(live, cal, fake)
+    fallback = SynthProvider({"^VIX": make_daily_bars(cal, date(2026, 7, 1), date(2026, 10, 1), seed=3, start_price=18.0)})
+    app = build_app(live, broker=b, fallback_provider=fallback, clock=lambda: AFTER_CLOSE, alert_channels=[], calendar=cal)
+    try:
+        assert app.data.providers[Timeframe.D1] is b.provider and app.data.providers[Timeframe.H1] is b.provider
+        b.login()
+        res = app.data.load_bars("AAPL", Timeframe.D1, 1, now=AFTER_CLOSE)
+        assert res.provider == "robinhood" and len(res.df) == 1
+        vix = app.data.load_bars("^VIX", Timeframe.D1, 10, now=AFTER_CLOSE)
+        assert vix.provider == "yfinance" and len(vix.df) >= 10
+        assert not any(n == "get_equity_historicals" and "^VIX" in a["symbols"] for n, a in fake.calls)
+    finally:
+        app.close()
+    paper = load_settings(cfg, env={})
+    papp = build_app(paper, fallback_provider=fallback, quote_fn=lambda s: None, clock=lambda: AFTER_CLOSE,
+                     alert_channels=[], calendar=cal)
+    try:
+        assert papp.data.providers[Timeframe.D1].name == "yfinance"
+    finally:
+        papp.close()

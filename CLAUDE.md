@@ -20,6 +20,9 @@ Full history of the first build session: `docs/session-1-transcript.md`. README.
   `swingbot suggest-allowlist`.
 - Tool/field names for the MCP adapter come from a captured `tools/list` dated 2026-09-28 and have now been
   confirmed by the operator's preflight (`broker tools: all present`).
+- Live data comes from Robinhood: quotes always via the broker; bars via `data.providers: robinhood` (default
+  since session 3), with yfinance as the automatic fallback (index symbols such as `^VIX`, unknown tickers, broker
+  errors on the data path raise `ProviderError`, never a bare `BrokerError`). Paper mode uses yfinance.
 - Default is paper mode. Never set MODE=live, never add credentials, never place real orders from a cloud session.
 
 ## Setup

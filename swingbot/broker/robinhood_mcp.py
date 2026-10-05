@@ -68,6 +68,7 @@ from swingbot.broker.retry import (
     with_retry,
 )
 from swingbot.calendar import TradingCalendar
+from swingbot.data.provider import ProviderError
 from swingbot.data.robinhood_provider import RobinhoodProvider
 from swingbot.enums import AccountType, OrderStatus, OrderType, RunMode, Side, Timeframe, TimeInForce
 from swingbot.models import AccountSnapshot, Order, OrderRequest, Position, Quote
@@ -377,6 +378,7 @@ class McpClient:
 # ================================================================================================ broker
 class RobinhoodMcpBroker:
     name = "robinhood_mcp"
+    historicals_adjusted = True  # adjustment_type=split: frames built by RobinhoodProvider are split-adjusted
 
     def __init__(
         self,
@@ -767,32 +769,61 @@ class RobinhoodMcpBroker:
             raise ClientError(f"no usable quote for {symbol} (unknown, halted or never traded)", status=404)
         return q
 
-    def fetch_historicals(self, symbols: list[str], interval: str, span: str, bounds: str = "regular") -> list[dict]:
-        """Same record shape as the web API so ``RobinhoodProvider`` is reused unchanged."""
+    def fetch_historicals(self, symbols: list[str], interval: str, span: str, bounds: str = "regular",
+                          start: datetime | None = None) -> list[dict]:
+        """Same record shape as the web API so ``RobinhoodProvider`` is reused unchanged.
+
+        ``start`` (the cache's incremental or backfill request) bounds the range when given, so a daily refresh
+        pulls a handful of bars rather than the whole span; without it the provider's span is the lookback.
+        Failures on this read path raise ``ProviderError`` rather than ``BrokerError`` so the data service can
+        fall back to yfinance (index symbols such as ``^VIX`` never reach the equity tool at all). Auth failures
+        still propagate: a dead session must not be papered over by the fallback.
+        """
+        wanted = [s.upper() for s in symbols]
+        indexes = [s for s in wanted if s.startswith("^")]
+        if indexes:
+            log.info("historicals: %s are index symbols; the equity historicals tool cannot serve them", indexes)
+            wanted = [s for s in wanted if not s.startswith("^")]
+            if not wanted:
+                raise ProviderError(f"{indexes}: index symbols are not served by the equity historicals tool")
         days = _SPAN_DAYS.get(span)
         if days is None:
-            raise ClientError(f"unsupported span {span!r}")
-        start = (self.clock() - timedelta(days=days)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            raise ProviderError(f"unsupported span {span!r}")
+        now = self.clock()
+        begin = now - timedelta(days=days)
+        if start is not None:
+            s = start if start.tzinfo else start.replace(tzinfo=timezone.utc)
+            if s < now:
+                begin = s - timedelta(days=1)  # a day of margin: bars are left-edge labelled, the request inclusive
+        start_time = begin.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         out: list[dict] = []
-        for i in range(0, len(symbols), 10):
-            chunk = [s.upper() for s in symbols[i:i + 10]]
-            data = self._data(self._call(TOOLS["historicals"], {"symbols": chunk, "start_time": start,
-                                                                "interval": interval, "bounds": bounds,
-                                                                "adjustment_type": "split"},
-                                         cost=self.costs.get("historicals", 2), describe="historicals"),
-                              "historicals")
-            for item in _req(data, "results", "historicals") or []:
-                if not isinstance(item, dict):
-                    continue
-                sym = str(_req(item, "symbol", "historicals")).upper()
-                for bar in _req(item, "bars", "historicals") or []:
-                    if isinstance(bar, dict):
-                        rec = dict(bar)
-                        rec["symbol"] = sym
-                        out.append(rec)
-            missing = data.get("not_found") or []
-            if missing:
-                log.warning("historicals: symbols not found at the broker: %s", missing)
+        missing: list[str] = []
+        try:
+            for i in range(0, len(wanted), 10):
+                chunk = wanted[i:i + 10]
+                data = self._data(self._call(TOOLS["historicals"], {"symbols": chunk, "start_time": start_time,
+                                                                    "interval": interval, "bounds": bounds,
+                                                                    "adjustment_type": "split"},
+                                             cost=self.costs.get("historicals", 2), describe="historicals"),
+                                  "historicals")
+                for item in _req(data, "results", "historicals") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    sym = str(_req(item, "symbol", "historicals")).upper()
+                    for bar in _req(item, "bars", "historicals") or []:
+                        if isinstance(bar, dict):
+                            rec = dict(bar)
+                            rec["symbol"] = sym
+                            out.append(rec)
+                missing.extend(str(m).upper() for m in (data.get("not_found") or []))
+        except AuthError:
+            raise
+        except BrokerError as exc:
+            raise ProviderError(f"historicals via {self.name} failed: {exc}") from exc
+        if missing:
+            log.warning("historicals: symbols not found at the broker: %s", sorted(set(missing)))
+            if not out:
+                raise ProviderError(f"symbols not found at the broker: {sorted(set(missing))}")
         return out
 
     def get_bars(self, symbol: str, timeframe: Timeframe, start: datetime, end: datetime) -> pd.DataFrame:

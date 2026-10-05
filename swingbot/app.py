@@ -127,7 +127,9 @@ def build_app(
         for tf, name in settings.data.providers.items():
             if name == "robinhood":
                 if rh_provider is None:
-                    log.warning("data.providers[%s]=robinhood but broker is %s; using yfinance", tf, broker.name)
+                    # expected in paper mode (no broker feed); a misconfiguration in live mode
+                    log.log(logging.WARNING if settings.is_live else logging.INFO,
+                            "data.providers[%s]=robinhood but broker %s has no bar feed; using yfinance", tf, broker.name)
                     providers[Timeframe(tf)] = yf
                 else:
                     providers[Timeframe(tf)] = rh_provider
