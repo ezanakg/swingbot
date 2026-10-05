@@ -166,12 +166,16 @@ class AlertManager:
 def build_alert_manager(cfg: AlertsConfig, secrets: Secrets, mode: str,
                         sink: Callable[[Alert, list[str], bool], None] | None = None) -> AlertManager:
     channels: list[AlertChannel] = []
-    if cfg.telegram.enabled:
+    # A chat channel is on when settings.yaml enables it OR its secrets are present in the environment, so an
+    # operator can turn alerts on from .env alone without committing account-specific config.
+    telegram_on = cfg.telegram.enabled or bool(secrets.telegram_bot_token and secrets.telegram_chat_id)
+    discord_on = cfg.discord.enabled or bool(secrets.discord_webhook_url)
+    if telegram_on:
         if secrets.telegram_bot_token and secrets.telegram_chat_id:
             channels.append(TelegramChannel(secrets.telegram_bot_token, secrets.telegram_chat_id))
         else:
             log.warning("telegram alerts enabled but TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID missing; channel disabled")
-    if cfg.discord.enabled:
+    if discord_on:
         if secrets.discord_webhook_url:
             channels.append(DiscordChannel(secrets.discord_webhook_url))
         else:
