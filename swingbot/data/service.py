@@ -10,7 +10,7 @@ import pandas as pd
 
 from swingbot.calendar import TradingCalendar
 from swingbot.data.cache import ParquetBarCache
-from swingbot.data.provider import DataProvider, ProviderError, drop_unclosed_bars, empty_bars
+from swingbot.data.provider import DataProvider, ProviderError, drop_unclosed_bars, empty_bars, is_index_symbol
 from swingbot.data.quality import QualityParams, check_bars, dedupe
 from swingbot.enums import DataIssueCode, IssueAction, Timeframe
 from swingbot.models import DataIssue
@@ -80,6 +80,10 @@ class MarketDataService:
 
     def _fetch_fn(self, symbol: str, timeframe: Timeframe) -> Callable[[datetime, datetime], pd.DataFrame]:
         primary = self.provider_for(timeframe)
+        if is_index_symbol(symbol) and self.fallback is not None:
+            # a broker feed serves equities only; send ^VIX and friends straight to the fallback instead of
+            # paying a failed call and a warning on every scan
+            primary = self.fallback
 
         def fetch(start: datetime, end: datetime) -> pd.DataFrame:
             try:
