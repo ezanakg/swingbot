@@ -59,6 +59,11 @@ class DataProvider(Protocol):
         """Return bars for several symbols; providers that can batch override this for efficiency."""
 
 
+def is_index_symbol(symbol: str) -> bool:
+    """``^VIX``, ``^GSPC``: yfinance's index convention. Indexes have no traded volume and no broker feed."""
+    return str(symbol or "").startswith("^")
+
+
 def empty_bars() -> pd.DataFrame:
     idx = pd.DatetimeIndex([], tz="UTC", name="ts")
     return pd.DataFrame({c: pd.Series(dtype="float64") for c in BAR_COLUMNS}, index=idx)

@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from swingbot.calendar import TradingCalendar
+from swingbot.data.provider import is_index_symbol
 from swingbot.enums import DataIssueCode, IssueAction, Timeframe
 from swingbot.models import DataIssue
 
@@ -159,7 +160,8 @@ def check_bars(
     vol = df["volume"]
     zero_or_nan = vol.isna() | (vol <= 0)
     frac = float(zero_or_nan.mean()) if len(vol) else 0.0
-    if frac > params.max_zero_volume_pct:
+    # an index (^VIX, ^GSPC) has no traded volume by definition; flagging it would be noise on every scan
+    if frac > params.max_zero_volume_pct and not is_index_symbol(symbol):
         issues.append(
             DataIssue(code=DataIssueCode.ZERO_VOLUME, symbol=symbol, action=params.action("nan_values"),
                       detail=f"{frac:.2%} of bars have zero/NaN volume")

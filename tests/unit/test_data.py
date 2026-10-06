@@ -230,3 +230,39 @@ def test_cache_backfill_merges_and_tolerates_capped_providers(tmp_path, cal, dai
     c.update("SYN", Timeframe.D1, lambda s, e: (empty_calls.append(s), full.iloc[0:0])[1], now, cal,
              full_start=full.index[0].to_pydatetime() - timedelta(days=200))
     assert len(empty_calls) == 1 and len(c.read("SYN", Timeframe.D1)) == 120
+
+
+def test_index_symbols_skip_volume_check_and_route_to_fallback(tmp_path, cal, daily_bars):
+    """^VIX has no volume and no broker feed: no ZERO_VOLUME issue, and the service never asks the primary."""
+    from swingbot.data.provider import is_index_symbol
+    from swingbot.data.quality import QualityParams, check_bars
+
+    assert is_index_symbol("^VIX") and is_index_symbol("^gspc") and not is_index_symbol("VIX") and not is_index_symbol("")
+    now = datetime(2026, 10, 5, 20, 15, tzinfo=timezone.utc)
+    vix = daily_bars.tail(60).assign(volume=0.0)
+    params = QualityParams()
+    assert [i.code.value for i in check_bars(vix, "^VIX", Timeframe.D1, cal, now, params, min_bars=30)
+            if i.code.value == "ZERO_VOLUME"] == []
+    assert [i.code.value for i in check_bars(vix, "ZZZ", Timeframe.D1, cal, now, params, min_bars=30)
+            if i.code.value == "ZERO_VOLUME"] == ["ZERO_VOLUME"]
+
+    class Primary:
+        name = "robinhood"
+        calls = 0
+
+        def get_bars(self, symbol, timeframe, start, end):
+            Primary.calls += 1
+            raise ProviderError("index symbols are not served by the equity historicals tool")
+
+    class Fallback:
+        name = "yfinance"
+
+        def get_bars(self, symbol, timeframe, start, end):
+            out = vix[(vix.index >= pd.Timestamp(start)) & (vix.index <= pd.Timestamp(end))].copy()
+            out.attrs["symbol"] = symbol
+            return out
+
+    svc = MarketDataService({Timeframe.D1: Primary()}, Fallback(), ParquetBarCache(tmp_path), cal, params, 5, 5,
+                            clock=lambda: now)
+    res = svc.load_bars("^VIX", Timeframe.D1, 30, now=now)
+    assert Primary.calls == 0 and res.provider == "yfinance" and res.usable and len(res.df) >= 30
